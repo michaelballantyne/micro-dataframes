@@ -1,13 +1,12 @@
-from typing import Any, Callable, Protocol
-
-
-Consumer = Callable[[dict[str, Any]], None]
+from collections.abc import Callable
+from typing import Any, Protocol
 
 
 class Query(Protocol):
-    def filter(self, column: str, predicate: Callable[[Any], bool]) -> "IntermediateResult": ...
-    def join(self, other: "Query", left_on: str, right_on: str) -> "IntermediateResult": ...
-    def collect(self) -> "DataFrame": ...
+    def filter(self, column: str, predicate: Callable[[Any], bool]) -> IntermediateResult: ...
+    def join(self, other: Query, left_on: str, right_on: str) -> IntermediateResult: ...
+    def limit(self, n: int) -> IntermediateResult: ...
+    def collect(self) -> DataFrame: ...
 
 
 class DataFrame(Query):
@@ -24,19 +23,29 @@ class DataFrame(Query):
         else:
             self._columns = data
 
+    # Forward Query methods to IntermediateResult.
+    def filter(self, column: str, predicate: Callable[[Any], bool]) -> IntermediateResult:
+        return IntermediateResult.lift(self).filter(column, predicate)
+
+    def join(self, other: Query, left_on: str, right_on: str) -> IntermediateResult:
+        return IntermediateResult.lift(self).join(other, left_on, right_on)
+
+    def limit(self, n: int) -> IntermediateResult:
+        return IntermediateResult.lift(self).limit(n)
+
+    # Except collect.
+    def collect(self) -> DataFrame:
+        return self
+
     def __getitem__(self, column: str) -> list[Any]:
         return self._columns[column]
 
-    # Forward Query methods to IntermediateResult.
-    def filter(self, column: str, predicate: Callable[[Any], bool]) -> "IntermediateResult":
-        return IntermediateResult.from_columns(self._columns).filter(column, predicate)
 
-    def join(self, other: Query, left_on: str, right_on: str) -> "IntermediateResult":
-        return IntermediateResult.from_columns(self._columns).join(other, left_on, right_on)
+Consumer = Callable[[dict[str, Any]], None]
 
-    # Except collect.
-    def collect(self) -> "DataFrame":
-        return self
+
+class _StopPushing(Exception):
+    pass
 
 
 class IntermediateResult(Query):
@@ -46,36 +55,54 @@ class IntermediateResult(Query):
         self._run = run
 
     @classmethod
-    def from_columns(cls, columns: dict[str, list[Any]]) -> "IntermediateResult":
+    def lift(cls, query: Query) -> IntermediateResult:
+        if isinstance(query, IntermediateResult):
+            return query
+        columns = query.collect()._columns
         def run(consumer: Consumer) -> None:
             n = len(next(iter(columns.values())))
             for i in range(n):
                 consumer({col: vals[i] for col, vals in columns.items()})
         return cls(run)
 
-    def run(self, consumer: Consumer) -> None:
-        self._run(consumer)
-
-    def filter(self, column: str, predicate: Callable[[Any], bool]) -> "IntermediateResult":
+    def filter(self, column: str, predicate: Callable[[Any], bool]) -> IntermediateResult:
         def run(consumer: Consumer) -> None:
-            self.run(lambda row: consumer(row) if predicate(row[column]) else None)
+            self._run(lambda row: consumer(row) if predicate(row[column]) else None)
         return IntermediateResult(run)
 
-    def join(self, other: Query, left_on: str, right_on: str) -> "IntermediateResult":
+    def join(self, other: Query, left_on: str, right_on: str) -> IntermediateResult:
         def run(consumer: Consumer) -> None:
             right_rows: list[dict[str, Any]] = []
-            IntermediateResult.from_columns(other.collect()._columns).run(right_rows.append)
+            IntermediateResult.lift(other)._run(right_rows.append)
             def joined(left_row: dict[str, Any]) -> None:
                 for right_row in right_rows:
                     if left_row[left_on] == right_row[right_on]:
                         consumer(left_row | right_row)
-            self.run(joined)
+            self._run(joined)
         return IntermediateResult(run)
 
-    def collect(self) -> "DataFrame":
+    def limit(self, n: int) -> IntermediateResult:
+        # A consumer can't tell its producer to stop pushing, so escape
+        # with an exception once enough rows have arrived. Contrast with
+        # the pull version, where the consumer simply stops pulling.
+        def run(consumer: Consumer) -> None:
+            count = 0
+            def limited(row: dict[str, Any]) -> None:
+                nonlocal count
+                if count == n:
+                    raise _StopPushing()
+                count += 1
+                consumer(row)
+            try:
+                self._run(limited)
+            except _StopPushing:
+                pass
+        return IntermediateResult(run)
+
+    def collect(self) -> DataFrame:
         columns: dict[str, list[Any]] = {}
         def accumulate(row: dict[str, Any]) -> None:
             for col, val in row.items():
                 columns.setdefault(col, []).append(val)
-        self.run(accumulate)
+        self._run(accumulate)
         return DataFrame(columns)

@@ -1,12 +1,13 @@
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
-from typing import Any, Callable, Iterator, Protocol
+from typing import Any, Protocol
 
 
 class Query(Protocol):
-    def filter(self, column: str, predicate: Callable[[Any], bool]) -> "IntermediateResult": ...
-    def join(self, other: "Query", left_on: str, right_on: str) -> "IntermediateResult": ...
-    def limit(self, n: int) -> "IntermediateResult": ...
-    def collect(self) -> "DataFrame": ...
+    def filter(self, column: str, predicate: Callable[[Any], bool]) -> IntermediateResult: ...
+    def join(self, other: Query, left_on: str, right_on: str) -> IntermediateResult: ...
+    def limit(self, n: int) -> IntermediateResult: ...
+    def collect(self) -> DataFrame: ...
 
 
 class DataFrame(Query):
@@ -23,22 +24,22 @@ class DataFrame(Query):
         else:
             self._columns = data
 
-    def __getitem__(self, column: str) -> list[Any]:
-        return self._columns[column]
-
     # Forward Query methods to IntermediateResult.
-    def filter(self, column: str, predicate: Callable[[Any], bool]) -> "IntermediateResult":
-        return IntermediateResult(Source(self._columns)).filter(column, predicate)
+    def filter(self, column: str, predicate: Callable[[Any], bool]) -> IntermediateResult:
+        return IntermediateResult.lift(self).filter(column, predicate)
 
-    def join(self, other: Query, left_on: str, right_on: str) -> "IntermediateResult":
-        return IntermediateResult(Source(self._columns)).join(other, left_on, right_on)
+    def join(self, other: Query, left_on: str, right_on: str) -> IntermediateResult:
+        return IntermediateResult.lift(self).join(other, left_on, right_on)
 
-    def limit(self, n: int) -> "IntermediateResult":
-        return IntermediateResult(Source(self._columns)).limit(n)
+    def limit(self, n: int) -> IntermediateResult:
+        return IntermediateResult.lift(self).limit(n)
 
     # Except collect.
-    def collect(self) -> "DataFrame":
+    def collect(self) -> DataFrame:
         return self
+
+    def __getitem__(self, column: str) -> list[Any]:
+        return self._columns[column]
 
 
 class IntermediateResult(Query):
@@ -47,17 +48,26 @@ class IntermediateResult(Query):
     def __init__(self, plan: Plan) -> None:
         self._plan = plan
 
-    def filter(self, column: str, predicate: Callable[[Any], bool]) -> "IntermediateResult":
+    @classmethod
+    def lift(cls, query: Query) -> IntermediateResult:
+        # Keeping an IntermediateResult's plan intact (rather than
+        # collecting it) is what lets the optimizer push filters into
+        # the right side of a join.
+        if isinstance(query, IntermediateResult):
+            return query
+        return cls(Source(query.collect()._columns))
+
+    def filter(self, column: str, predicate: Callable[[Any], bool]) -> IntermediateResult:
         return IntermediateResult(Filter(self._plan, column, predicate))
 
-    def join(self, other: Query, left_on: str, right_on: str) -> "IntermediateResult":
-        other_plan = other._plan if isinstance(other, IntermediateResult) else Source(other.collect()._columns)
+    def join(self, other: Query, left_on: str, right_on: str) -> IntermediateResult:
+        other_plan = IntermediateResult.lift(other)._plan
         return IntermediateResult(Join(self._plan, other_plan, left_on, right_on))
 
-    def limit(self, n: int) -> "IntermediateResult":
+    def limit(self, n: int) -> IntermediateResult:
         return IntermediateResult(Limit(self._plan, n))
 
-    def collect(self) -> "DataFrame":
+    def collect(self) -> DataFrame:
         columns: dict[str, list[Any]] = {}
         for row in execute(optimize(self._plan)):
             for col, val in row.items():
@@ -67,9 +77,6 @@ class IntermediateResult(Query):
 
 # --- Plan nodes (the deep embedding) ---
 
-# A closed union of plain dataclasses rather than classes with methods,
-# so each pass over plans is a single recursive function and mypy can
-# check that its match is exhaustive.
 type Plan = Source | Filter | Join | Limit
 
 

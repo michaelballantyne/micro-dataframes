@@ -1,10 +1,9 @@
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
-from typing import Any, Callable, Iterator
+from typing import Any
 
 # --- Plan nodes (the deep embedding) ---
 
-# A closed union of plain dataclasses; each pass over plans is a single
-# recursive function and mypy can check that its match is exhaustive.
 type Plan = Source | Filter | Join | Limit
 
 

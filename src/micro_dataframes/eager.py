@@ -1,4 +1,5 @@
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 
 class DataFrame:
@@ -18,12 +19,12 @@ class DataFrame:
     def _nrows(self) -> int:
         return len(next(iter(self._columns.values())))
 
-    def filter(self, column: str, predicate: Callable[[Any], bool]) -> "DataFrame":
+    def filter(self, column: str, predicate: Callable[[Any], bool]) -> DataFrame:
         mask = [predicate(v) for v in self._columns[column]]
-        return DataFrame({col: [v for v, keep in zip(vals, mask) if keep]
+        return DataFrame({col: [v for v, keep in zip(vals, mask, strict=True) if keep]
                           for col, vals in self._columns.items()})
 
-    def join(self, other: "DataFrame", left_on: str, right_on: str) -> "DataFrame":
+    def join(self, other: DataFrame, left_on: str, right_on: str) -> DataFrame:
         result: dict[str, list[Any]] = {col: [] for col in self._columns | other._columns}
 
         n_left = self._nrows()
@@ -37,6 +38,9 @@ class DataFrame:
                         result[col].append(other._columns[col][j])
 
         return DataFrame(result)
+
+    def limit(self, n: int) -> DataFrame:
+        return DataFrame({col: vals[:n] for col, vals in self._columns.items()})
 
     def __getitem__(self, column: str) -> list[Any]:
         return self._columns[column]

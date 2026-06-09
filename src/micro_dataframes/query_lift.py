@@ -1,4 +1,6 @@
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
+
 
 class DataFrame:
     _columns: dict[str, list[Any]]
@@ -27,12 +29,12 @@ class Query:
     def _nrows(self) -> int:
         return len(next(iter(self._columns.values())))
 
-    def filter(self, column: str, predicate: Callable[[Any], bool]) -> "Query":
+    def filter(self, column: str, predicate: Callable[[Any], bool]) -> Query:
         mask = [predicate(v) for v in self._columns[column]]
-        return Query({col: [v for v, keep in zip(vals, mask) if keep]
+        return Query({col: [v for v, keep in zip(vals, mask, strict=True) if keep]
                       for col, vals in self._columns.items()})
 
-    def join(self, other: "Query", left_on: str, right_on: str) -> "Query":
+    def join(self, other: Query, left_on: str, right_on: str) -> Query:
         result: dict[str, list[Any]] = {col: [] for col in self._columns | other._columns}
         for i in range(self._nrows()):
             for j in range(other._nrows()):
@@ -43,12 +45,12 @@ class Query:
                         result[col].append(other._columns[col][j])
         return Query(result)
 
-    def collect(self) -> "DataFrame":
+    def limit(self, n: int) -> Query:
+        return Query({col: vals[:n] for col, vals in self._columns.items()})
+
+    def collect(self) -> DataFrame:
         return DataFrame(self._columns)
 
 
-def q(df: "DataFrame") -> Query:
+def q(df: DataFrame) -> Query:
     return Query(df._columns)
-
-
-

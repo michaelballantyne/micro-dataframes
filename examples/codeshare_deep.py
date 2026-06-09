@@ -1,26 +1,11 @@
-import csv
-from pathlib import Path
+from loader import load_rows
 
-from micro_dataframes.deep import (
-    Filter,
-    Join,
-    Limit,
-    Source,
-    collect,
-    from_rows,
-)
+from micro_dataframes.deep import Filter, Join, Limit, Source, collect, from_rows
 
+routes = Source(from_rows(load_rows("routes")))
+airlines = Source(from_rows(load_rows("airlines")))
 
-def read_csv(path: Path) -> Source:
-    with path.open() as f:
-        rows = list(csv.DictReader(f))
-    return Source(from_rows([dict(row) for row in rows]))
-
-
-routes = read_csv(Path("examples/openflights/routes.csv"))
-airlines = read_csv(Path("examples/openflights/airlines.csv"))
-
-plan = Limit(
+query = Limit(
     Filter(
         Filter(
             Join(routes, airlines, "route-airline-id", "airline-id"),
@@ -28,7 +13,6 @@ plan = Limit(
         "name", lambda v: v == "American Airlines"),
     3)
 
-result = collect(plan)
+result = collect(query)
 
-for row in result["source-airport"]:
-    print(row)
+print(result["source-airport"])

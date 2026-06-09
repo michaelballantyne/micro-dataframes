@@ -1,17 +1,9 @@
-import csv
-from pathlib import Path
+from loader import load_rows
 
 from micro_dataframes.lazy_pull import DataFrame
 
-
-def read_csv(path: Path) -> DataFrame:
-    with path.open() as f:
-        rows = list(csv.DictReader(f))
-    return DataFrame([dict(row) for row in rows])
-
-
-routes = read_csv(Path("examples/openflights/routes.csv"))
-airlines = read_csv(Path("examples/openflights/airlines.csv"))
+routes = DataFrame(load_rows("routes"))
+airlines = DataFrame(load_rows("airlines"))
 
 result = (
     routes
@@ -22,5 +14,4 @@ result = (
     .collect()
 )
 
-for row in result["source-airport"]:
-    print(row)
+print(result["source-airport"])
