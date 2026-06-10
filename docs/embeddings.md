@@ -1,10 +1,10 @@
 # Embedding a query language: what this repo shows
 
-This is the concept-organized companion to [`tour.md`](tour.md), which walks
-the modules in reading order. Here the organization is by idea instead:
-syntax, shallow versus deep embeddings, the optimizations each makes
-possible, and extensibility. Everything is illustrated by one running query
-over two OpenFlights tables:
+The README's implementation table lists the modules in a sensible reading
+order; this document explains the ideas they illustrate, organized by
+concept: syntax, shallow versus deep embeddings, the optimizations each
+makes possible, and extensibility. Everything is illustrated by one running
+query over two OpenFlights tables:
 
 ```python
 routes.join(airlines, left_on="route-airline-id", right_on="airline-id")
@@ -385,6 +385,15 @@ runs to completion over its whole input, so `limit` saves nothing. Each
 strategy in this section gives something up; there is no point on the menu
 that dominates.
 
+A closing distinction, since the words invite confusion: pull versus push
+(section 2.2) and row-at-a-time versus column-at-a-time are different axes.
+Pull and push are about who drives when results stream through operators one
+unit at a time. In the whole-column versions, each operator finishes before
+the next begins, so there is nothing to stream and the pull/push distinction
+collapses into plain statement sequencing. Production engines sit between
+the extremes — batches of a few thousand rows — where both axes are in play
+at once.
+
 ## 4. Extensibility
 
 A user wants `distinct(column)` — keep the first row for each value of a
@@ -474,6 +483,20 @@ Semantics you don't promise are implementation freedom you keep.
 | 3.5 Vectorization | `vectorized`, `arrow` |
 | 4 Extensibility | `codeshare_functional_extension.py`, `codeshare_monkeypatch.py`, `pipe_rows` |
 | 5 Contracts | `arrow`, git history |
+
+## Exercises
+
+- Add a `select` operator and projection pushdown — the other canonical
+  optimization, and it gives the `schema` pass more to do.
+- Make the optimizer choose which join input to build the index over. It
+  needs cardinality estimates: a new pass over the plan.
+- Extend `arrow.py`'s `Expr` with arithmetic.
+- Try writing `distinct` for `fluent_pushdown.py` and see how the closed
+  plan type gets in the way (then compare with each escape route in
+  section 4).
+- Change `lazy_pull.py`'s `Iterator[Row]` to an iterator of row *batches*
+  and watch the operators turn into kernel calls — the production middle
+  ground between sections 2.2 and 3.5.
 
 ## Further reading
 

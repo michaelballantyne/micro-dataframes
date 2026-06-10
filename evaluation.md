@@ -51,7 +51,7 @@ so they are easy to drop.)
   teaching point.
 - **Prose.** The rationale for each module lived only in commit messages.
   Notes per module saying what it demonstrates and what to compare it against
-  let the files stand alone as course material (now in `docs/tour.md`).
+  let the files stand alone as course material (now in `docs/embeddings.md`).
 - **Observable optimization.** Pushdown and fusion were claimed, not shown. A
   small benchmark makes `eager` vs `fluent_pushdown` vs `codegen` differ
   measurably, not just architecturally.
