@@ -77,10 +77,14 @@ class DataFrame:
         return DataFrame._from_table(self._table.filter(expr._expr))
 
     def join(self, other: DataFrame, left_on: str, right_on: str) -> DataFrame:
-        # pyarrow's hash-join does not preserve nested-loop order (left rows in
-        # original order, each followed by matching right rows in original order).
-        # Fix: attach integer row-index columns to both sides, join, sort by
-        # (left_idx, right_idx), then drop the sentinel columns.
+        # The other implementations merge rows with `left_row | right_row`:
+        # on a column name collision the right side wins, and both key
+        # columns appear when their names differ.  pyarrow's hash-join would
+        # instead produce duplicate column names, and it does not preserve
+        # nested-loop order (left rows in original order, each followed by
+        # its matches in right order).  Sentinel columns repair both: integer
+        # row indices to sort by afterward, and a renamed left key so left
+        # columns the right side also has can be dropped before the join.
         sentinel_l = "__left_row_idx__"
         sentinel_r = "__right_row_idx__"
         left = self._table.append_column(
@@ -90,9 +94,19 @@ class DataFrame:
             sentinel_r, pa.array(range(other._table.num_rows), type=pa.int64())
         )
 
+        key = left_on
+        if left_on in other._table.column_names:
+            key = "__left_key__"
+            left = left.rename_columns(
+                [key if name == left_on else name for name in left.column_names]
+            )
+        left = left.drop_columns(
+            [name for name in left.column_names if name in set(other._table.column_names)]
+        )
+
         joined = left.join(
             right,
-            keys=left_on,
+            keys=key,
             right_keys=right_on,
             join_type="inner",
             coalesce_keys=False,  # keep both key columns so right_on survives
@@ -100,9 +114,8 @@ class DataFrame:
         sorted_joined = joined.sort_by(
             [(sentinel_l, "ascending"), (sentinel_r, "ascending")]
         )
-        return DataFrame._from_table(
-            sorted_joined.drop_columns([sentinel_l, sentinel_r])
-        )
+        dropped = [sentinel_l, sentinel_r] + ([key] if key != left_on else [])
+        return DataFrame._from_table(sorted_joined.drop_columns(dropped))
 
     def limit(self, n: int) -> DataFrame:
         return DataFrame._from_table(self._table.slice(0, n))

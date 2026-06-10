@@ -54,7 +54,7 @@ so they are easy to drop.)
   small benchmark makes `eager` vs `fluent_pushdown` vs `codegen` differ
   measurably, not just architecturally.
 - **Error staging.** When does a misspelled column name fail? Immediately in
-  `eager`, at `collect()` in the lazy versions, inside generated code in
+  `eager`, at `collect()` in the lazy versions, while compiling the plan in
   `codegen`. Error locality is a standard embedding trade-off and the
   material was already here; `tests/test_error_staging.py` now records it.
 - **Projection.** A `select` operator would enable projection pushdown, the
@@ -72,7 +72,10 @@ so they are easy to drop.)
   for the lazy versions. `LazyFrame` or `QueryHandle` would mislead less.
 - Join semantics are subtle and undocumented: `left_row | right_row` means a
   shared non-key column name silently takes the right side's value, and both
-  key columns survive. Fine for the example data, surprising elsewhere.
+  key columns survive. Fine for the example data, surprising elsewhere. Worse,
+  the column-append joins (`eager`, `query_lift`, `query_forward`) don't
+  match the others here: a name both sides share collects values from both,
+  giving doubled, ragged columns (see `tests/test_join_edges.py`).
 - The `DataFrame` constructor accepts a list of dicts with missing keys and
   silently builds ragged columns, which later crashes `zip(strict=True)` in
   some versions and not others.
@@ -94,13 +97,13 @@ contrasts but could be exercises rather than lecture material.
 
 ## Is a dataframe DSL a good choice?
 
-Yes — close to optimal for this purpose. The domain is familiar, the deep
-representation (relational plans) is the textbook one, predicate pushdown is a
-real, famous optimization that fits in fifteen lines here, and every step has
-a production system to point at (pandas is `eager`, Polars' lazy API is
-`fluent_pushdown`, DuckDB/HyPer are `codegen`, pandas-on-Arrow is `arrow`).
-Few domains give you laziness, optimization, staging, and extensibility all
-with this little code.
+Yes. The domain is familiar, the deep representation (relational plans) is
+the textbook one, predicate pushdown is a well-known optimization that fits
+in fifteen lines here, and every step has a production system to point at
+(pandas is `eager`, Polars' lazy API is `fluent_pushdown`, DuckDB/HyPer are
+`codegen`, pandas-on-Arrow is `arrow`). It is hard to find another domain
+where laziness, optimization, staging, and extensibility all show up in this
+little code.
 
 Two limitations to acknowledge. Column names are strings, so the static-typing
 dimension of embeddings (typed schemas, compile-time errors) is mostly out of

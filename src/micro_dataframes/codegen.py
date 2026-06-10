@@ -306,10 +306,17 @@ def produce(
             # engine would index the buffers by key in a hash table rather
             # than scan them per left row.)
             buf = names.fresh("_right")
+            fill = names.fresh("_fill")
             right_cols = sorted(schema(right))
 
-            build = quote(f"{buf} = INIT", INIT=_empty_columns(right_cols)) + produce(
-                right, lambda cv: _append_columns(buf, right_cols, cv), ns, names, {}
+            # The build pipeline gets its own function so that an early exit
+            # (a limit's `return out` somewhere in the right side) stops only
+            # the buffer filling, not the whole kernel.
+            build = quote(f"{buf} = INIT", INIT=_empty_columns(right_cols)) + quote(
+                f"def {fill}():\n    BODY\n{fill}()",
+                BODY=produce(
+                    right, lambda cv: _append_columns(buf, right_cols, cv), ns, names, {}
+                ),
             )
             j = names.fresh("_i")
 

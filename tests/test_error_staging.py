@@ -83,21 +83,22 @@ def test_lazy_pull_filter_deferred_to_collect() -> None:
 
 
 # ---------------------------------------------------------------------------
-# codegen: plan node at .filter(), KeyError raised inside generated kernel
+# codegen: plan node at .filter(), KeyError raised while compiling the plan
 # ---------------------------------------------------------------------------
 
 
 def test_codegen_filter_deferred_to_collect() -> None:
     """codegen.filter() records the column name in a Filter plan node.  At
-    .collect() time the plan is compiled and executed.  The codegen path tracks
-    column names in col_vars; if the column is not in the source schema the
-    KeyError surfaces inside the generated kernel at runtime."""
+    .collect() time compile_plan() calls produce(), which looks the column up
+    in col_vars; a column missing from the source schema raises KeyError during
+    AST construction — still inside collect(), but before the kernel is ever
+    compiled or run."""
     from micro_dataframes import codegen
 
     df = codegen.DataFrame(_COLS)
     # No error here.
     ir = df.filter("nonexistent", lambda v: v == 1)
-    # The error surfaces inside the compiled kernel during collect().
+    # The error is raised here, while collect() compiles the plan.
     with pytest.raises(KeyError):
         ir.collect()
 

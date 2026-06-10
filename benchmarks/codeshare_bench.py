@@ -105,8 +105,8 @@ def main() -> None:
         "  * arrow's per-query time is dominated by fixed overhead (building the\n"
         "    table, sorting to restore join order); its kernels scale far better\n"
         "    than pure Python as data grows.\n"
-        "  * limit(3) helps the streaming implementations (they stop early) and\n"
-        "    does nothing for eager, which computes everything regardless."
+        "  * limit(3) helps the streaming implementations and codegen (they stop\n"
+        "    early) and does nothing for eager, which computes everything regardless."
     )
 
 
