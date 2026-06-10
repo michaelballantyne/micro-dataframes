@@ -310,6 +310,23 @@ def _codeshare_arrow(
     return {col: result[col] for col in result._table.schema.names}
 
 
+def _codeshare_vectorized(
+    routes_rows: list[dict[str, Any]], airlines_rows: list[dict[str, Any]]
+) -> dict[str, list[Any]]:
+    from micro_dataframes import vectorized as vec_mod
+
+    r = vec_mod.DataFrame(routes_rows)
+    a = vec_mod.DataFrame(airlines_rows)
+    result = (
+        r.join(a, "route-airline-id", "airline-id")
+        .filter(vec_mod.col("codeshare") == "Y")
+        .filter(vec_mod.col("name") == "American Airlines")
+        .limit(3)
+    )
+    # _columns holds full column arrays; apply sel via __getitem__ for each column.
+    return {c: result[c] for c in result._columns}
+
+
 # ---------------------------------------------------------------------------
 # Parametrize over all twelve adapters
 # ---------------------------------------------------------------------------
@@ -327,6 +344,7 @@ _ALL_ADAPTERS = [
     pytest.param(_codeshare_pipe_rows, id="pipe_rows"),
     pytest.param(_codeshare_codegen, id="codegen"),
     pytest.param(_codeshare_arrow, id="arrow"),
+    pytest.param(_codeshare_vectorized, id="vectorized"),
 ]
 
 # Fast implementations that can run the full codeshare query without a
@@ -337,6 +355,7 @@ _FAST_ADAPTERS = [
     pytest.param(_codeshare_pipe_rows, id="pipe_rows"),
     pytest.param(_codeshare_codegen, id="codegen"),
     pytest.param(_codeshare_arrow, id="arrow"),
+    pytest.param(_codeshare_vectorized, id="vectorized"),
 ]
 
 
@@ -511,6 +530,14 @@ def _run_filter_arrow(rows: list[dict[str, Any]]) -> dict[str, list[Any]]:
     return {col: result[col] for col in result._table.schema.names}
 
 
+def _run_filter_vectorized(rows: list[dict[str, Any]]) -> dict[str, list[Any]]:
+    from micro_dataframes import vectorized as vec_mod
+
+    df = vec_mod.DataFrame(rows)
+    result = df.filter(vec_mod.col("pop") >= 4_000_000)
+    return {c: result[c] for c in result._columns}
+
+
 _FILTER_RUNNERS = [
     pytest.param(_run_filter_eager, id="eager"),
     pytest.param(_run_filter_query_lift, id="query_lift"),
@@ -524,6 +551,7 @@ _FILTER_RUNNERS = [
     pytest.param(_run_filter_pipe_rows, id="pipe_rows"),
     pytest.param(_run_filter_codegen, id="codegen"),
     pytest.param(_run_filter_arrow, id="arrow"),
+    pytest.param(_run_filter_vectorized, id="vectorized"),
 ]
 
 
@@ -678,6 +706,17 @@ def _join_arrow(
     return {col: result[col] for col in result._table.schema.names}
 
 
+def _join_vectorized(
+    left_rows: list[dict[str, Any]], right_rows: list[dict[str, Any]]
+) -> dict[str, list[Any]]:
+    from micro_dataframes import vectorized as vec_mod
+
+    r_v = vec_mod.DataFrame(left_rows)
+    a_v = vec_mod.DataFrame(right_rows)
+    result = r_v.join(a_v, "route-id", "airline-id")
+    return {c: result[c] for c in result._columns}
+
+
 _JOIN_RUNNERS = [
     pytest.param(_join_eager, id="eager"),
     pytest.param(_join_query_lift, id="query_lift"),
@@ -691,6 +730,7 @@ _JOIN_RUNNERS = [
     pytest.param(_join_pipe_rows, id="pipe_rows"),
     pytest.param(_join_codegen, id="codegen"),
     pytest.param(_join_arrow, id="arrow"),
+    pytest.param(_join_vectorized, id="vectorized"),
 ]
 
 
@@ -790,6 +830,13 @@ def _limit0_arrow() -> dict[str, list[Any]]:
     return {col: result[col] for col in result._table.schema.names}
 
 
+def _limit0_vectorized() -> dict[str, list[Any]]:
+    from micro_dataframes import vectorized as vec_mod
+
+    result = vec_mod.DataFrame(_LIMIT0_COLS).limit(0)
+    return {c: result[c] for c in result._columns}
+
+
 _LIMIT0_RUNNERS = [
     pytest.param(_limit0_eager, id="eager"),
     pytest.param(_limit0_query_lift, id="query_lift"),
@@ -803,6 +850,7 @@ _LIMIT0_RUNNERS = [
     pytest.param(_limit0_pipe_rows, id="pipe_rows"),
     pytest.param(_limit0_codegen, id="codegen"),
     pytest.param(_limit0_arrow, id="arrow"),
+    pytest.param(_limit0_vectorized, id="vectorized"),
 ]
 
 
@@ -926,6 +974,13 @@ def _nomatch_arrow() -> dict[str, list[Any]]:
     return {col: result[col] for col in result._table.schema.names}
 
 
+def _nomatch_vectorized() -> dict[str, list[Any]]:
+    from micro_dataframes import vectorized as vec_mod
+
+    result = vec_mod.DataFrame(_NOMATCH_COLS).filter(vec_mod.col("a") == 999)
+    return {c: result[c] for c in result._columns}
+
+
 _NOMATCH_RUNNERS = [
     pytest.param(_nomatch_eager, id="eager"),
     pytest.param(_nomatch_query_lift, id="query_lift"),
@@ -939,6 +994,7 @@ _NOMATCH_RUNNERS = [
     pytest.param(_nomatch_pipe_rows, id="pipe_rows"),
     pytest.param(_nomatch_codegen, id="codegen"),
     pytest.param(_nomatch_arrow, id="arrow"),
+    pytest.param(_nomatch_vectorized, id="vectorized"),
 ]
 
 

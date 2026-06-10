@@ -1,7 +1,7 @@
 # Evaluation: this repo as teaching material for DSL embeddings
 
 An assessment of the collection as a vehicle for teaching embedded DSL design,
-written after adding the `codegen` and `arrow` implementations.
+written after adding the `codegen`, `vectorized`, and `arrow` implementations.
 
 ## What works
 
@@ -17,8 +17,10 @@ minutes:
 4. `fluent_pushdown.py` — the user-facing surface and the representation
    decouple: fluent frontend, plan backend. This is the shape of Polars'
    lazy API, Spark DataFrames, and dask.
-5. `codegen.py` / `arrow.py` — the plan is retargeted: compiled to a fused
-   Python kernel, or executed on vectorized Arrow kernels.
+5. `codegen.py` / `vectorized.py` / `arrow.py` — three more execution
+   models: the plan compiled to a fused Python kernel; columnar execution
+   with whole-column kernels and selection vectors; and the same columnar
+   model delegated to Arrow's compiled kernels.
 
 The extension trio (`codeshare_functional_extension.py`,
 `codeshare_monkeypatch.py`, `pipe_rows.py`) is the most distinctive part of
@@ -90,10 +92,12 @@ If a course has time for four: `eager`, `lazy_pull` (or `functional`),
 `deep_pushdown`, `fluent_pushdown`. That covers shallow vs deep, lazy vs
 eager, optimization, and the frontend/backend split. `pipe_rows` is the best
 fifth — extensibility against an optimizer is the question students will
-actually face in real systems. `codegen` and `arrow` are good capstones; they
-show the plan is a real intermediate representation by giving it second and
-third backends. `lazy_push` and `query_lift`/`query_forward` are useful
-contrasts but could be exercises rather than lecture material.
+actually face in real systems. `codegen`, `vectorized`, and `arrow` are good
+capstones: the first shows the plan is a real intermediate representation by
+giving it a second backend, and the columnar pair shows the execution model
+real engines actually use — once with the kernels visible, once delegated to
+a library. `lazy_push` and `query_lift`/`query_forward` are useful contrasts
+but could be exercises rather than lecture material.
 
 ## Is a dataframe DSL a good choice?
 

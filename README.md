@@ -25,7 +25,8 @@ uv run python examples/codeshare_eager.py
 | `fluent_pushdown.py` | Fluent frontend, deep backend | The fluent interface builds `Plan` nodes instead of executing; `collect()` optimizes then interprets. Roughly how Polars' lazy API is shaped. |
 | `pipe_rows.py` | Deep + sanctioned extension point | `fluent_pushdown` plus `pipe_rows(fn)`, an escape hatch taking an opaque iterator transformer. The optimizer must treat it as a barrier. |
 | `codegen.py` | Deep embedding + code generation | After pushdown, compiles the plan to one fused Python function: nested loops, inline filter guards, a limit counter. The kernel is built as a Python AST with a small quasiquote helper and `compile`/`exec`; lambdas and source columns are injected into its namespace. The example prints the generated kernel. |
-| `arrow.py` | Eager on Arrow kernels | Executes on `pyarrow` compute kernels. `filter` takes a small expression DSL (`col("x") == "Y"`) instead of a lambda, because the backend can't run opaque Python functions over its columns. |
+| `vectorized.py` | Columnar interpreter, selection vectors | Whole-column kernels are the only place row loops live; operators compose them. `filter` and `limit` shrink a selection vector instead of copying data; `join` is a hash join over index vectors. The predicate DSL is a small deep embedding evaluated to a mask. |
+| `arrow.py` | Eager on Arrow kernels | The same execution model as `vectorized.py`, delegated to `pyarrow`'s compute kernels. `filter` takes the expression DSL (`col("x") == "Y"`) instead of a lambda, because the backend can't run opaque Python functions over its columns. |
 
 Two examples extend implementations from the outside:
 `codeshare_functional_extension.py` adds a `distinct` operator to the
@@ -40,7 +41,7 @@ These are kept separate from the implementations and examples:
 - `tests/` — differential tests running the same queries through every
   implementation, plus tests pinning down when each embedding reports errors.
 - `benchmarks/` — timings comparing no optimization, predicate pushdown,
-  the compiled kernel, and Arrow.
+  the compiled kernel, and the two columnar versions.
 - `evaluation.md` — notes on the collection as teaching material.
 
 ## Data

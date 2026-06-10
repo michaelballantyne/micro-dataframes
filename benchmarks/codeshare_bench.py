@@ -18,7 +18,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from micro_dataframes import arrow, codegen, eager, fluent_pushdown, lazy_pull
+from micro_dataframes import arrow, codegen, eager, fluent_pushdown, lazy_pull, vectorized
 from micro_dataframes.arrow import col
 
 DATA_DIR = Path(__file__).parent.parent / "examples" / "openflights"
@@ -57,6 +57,17 @@ def arrow_query(routes: Rows, airlines: Rows, n: int | None) -> Any:
     return q if n is None else q.limit(n)
 
 
+# vectorized uses the expression DSL and is eager (selection-vector model).
+def vectorized_query(routes: Rows, airlines: Rows, n: int | None) -> Any:
+    q = (
+        vectorized.DataFrame(routes)
+        .join(vectorized.DataFrame(airlines), left_on="route-airline-id", right_on="airline-id")
+        .filter(vectorized.col("codeshare") == "Y")
+        .filter(vectorized.col("name") == "American Airlines")
+    )
+    return q if n is None else q.limit(n)
+
+
 def best_of_3(fn: Callable[[], Any]) -> tuple[float, Any]:
     best = float("inf")
     result: Any = None
@@ -74,6 +85,7 @@ def bench(n: int | None, routes: Rows, airlines: Rows, routes_sub: Rows) -> None
         ("fluent_pushdown", routes, lambda r: lambda_query(fluent_pushdown, r, airlines, n)),
         ("codegen", routes, lambda r: lambda_query(codegen, r, airlines, n)),
         ("arrow", routes, lambda r: arrow_query(r, airlines, n)),
+        ("vectorized", routes, lambda r: vectorized_query(r, airlines, n)),
     ]
     print(f"{'implementation':<16} {'routes rows':>12} {'result rows':>12} {'best of 3':>12}")
     for name, data, fn in runs:
@@ -102,11 +114,13 @@ def main() -> None:
         "    anything; it still filters after the join.\n"
         "  * fluent_pushdown and codegen run the same optimized plan; codegen also\n"
         "    removes the per-row dict machinery by compiling a fused kernel.\n"
+        "  * vectorized pays interpreter overhead once per column instead of once\n"
+        "    per row, which is enough to keep up with codegen at this scale.\n"
         "  * arrow's per-query time is dominated by fixed overhead (building the\n"
         "    table, sorting to restore join order); its kernels scale far better\n"
         "    than pure Python as data grows.\n"
         "  * limit(3) helps the streaming implementations and codegen (they stop\n"
-        "    early) and does nothing for eager, which computes everything regardless."
+        "    early); eager, vectorized, and arrow compute everything regardless."
     )
 
 

@@ -28,6 +28,7 @@ from micro_dataframes import (
     pipe_rows,
     query_forward,
     query_lift,
+    vectorized,
 )
 
 
@@ -89,17 +90,24 @@ def _join(
             r_plan = mod.Limit(r_plan, limit_right)
         plan = mod.Join(mod.Source(_cols(left)), r_plan, left_on, right_on)
         return dict(mod.collect(plan))
-    assert impl == "arrow"
-    r_a = arrow.DataFrame(right)
+    if impl == "arrow":
+        r_a = arrow.DataFrame(right)
+        if limit_right is not None:
+            r_a = r_a.limit(limit_right)
+        result = arrow.DataFrame(left).join(r_a, left_on, right_on)
+        return {c: result[c] for c in result._table.schema.names}
+    assert impl == "vectorized"
+    r_v = vectorized.DataFrame(right)
     if limit_right is not None:
-        r_a = r_a.limit(limit_right)
-    result = arrow.DataFrame(left).join(r_a, left_on, right_on)
-    return {c: result[c] for c in result._table.schema.names}
+        r_v = r_v.limit(limit_right)
+    result_v = vectorized.DataFrame(left).join(r_v, left_on, right_on)
+    return {c: result_v[c] for c in result_v._columns}
 
 
 _ALL = [
     "eager", "query_lift", "query_forward", "lazy_pull", "lazy_push", "functional",
     "deep", "deep_pushdown", "fluent_pushdown", "pipe_rows", "codegen", "arrow",
+    "vectorized",
 ]
 # Implementations whose joins merge rows like left_row | right_row.
 _ROW_MERGE = [i for i in _ALL if i not in ("eager", "query_lift", "query_forward")]

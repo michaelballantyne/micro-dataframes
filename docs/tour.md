@@ -144,19 +144,48 @@ There is also a limitation to notice: since the lambda predicates are opaque,
 the generated code can only call them (`pred0(...)`). The kernel fuses the
 plumbing but not the predicates.
 
-## 10. `arrow.py`
+## 10. `vectorized.py`
 
-The execution backend is pyarrow's vectorized compute kernels. This forces an
-API change: a lambda can't be handed to Arrow, so `filter` takes a small
-expression DSL instead — `col("codeshare") == "Y"` — which builds an
-expression tree Arrow can evaluate column-wise. The predicate, opaque in
-every other version, is now data.
+A different answer to interpreter overhead than `codegen.py`: instead of
+removing the per-row dispatch by compiling it away, amortize it by processing
+a whole column per call. The kernels section is the point of the module —
+`compare`, the mask combinators, `take`, and `hash_join` are the only places
+row loops live; the operators just compose them. `filter` and `limit` never
+copy data; they shrink a selection vector (the list of live row indices).
+This is the execution model of DuckDB and Polars, reduced to about a hundred
+lines.
 
-The DSL is small: `Expr` wraps a `pyarrow.compute.Expression` and delegates
-operators to it. Overloading `==` to return a non-boolean is standard
-practice in embedded query DSLs (pandas, SQLAlchemy, Polars, ORMs), and it
-has a standard cost: `__eq__`'s contract is violated, and mypy needs a
-`type: ignore[override]`.
+Two things to compare against the rest of the collection. First, lambdas are
+gone again: a per-row predicate would defeat whole-column execution, so
+`filter` takes the `col("x") == "Y"` expression DSL. Here the DSL is a small
+deep embedding — frozen dataclass nodes plus an `eval_pred` interpreter that
+maps each node to a kernel call — the same move `deep.py` made for query
+plans, now applied to predicates. Second, note what the model gives up:
+`limit` can't stop the join early, because each operator runs to completion
+over its whole input before the next starts.
+
+Worth knowing: push vs pull (step 4) and row-at-a-time vs column-at-a-time
+are different axes. Push and pull are about who drives when results stream
+through operators one unit at a time; here each operator finishes before the
+next begins, so there is nothing to stream and the distinction collapses
+into plain sequencing. Production engines sit in the middle — batches of a
+few thousand rows — where both axes are in play at once.
+
+## 11. `arrow.py`
+
+The same columnar model, delegated to a real library: pyarrow's compute
+kernels. Each operator is one call into Arrow; nothing about the execution
+is visible from here, which is precisely the trade — after `vectorized.py`,
+read this as what the model looks like from the outside.
+
+The delegation forces the same API change for a harder reason: a lambda
+can't be handed to Arrow at all, since the kernels are compiled C++. The
+`Expr` wrapper here is a shallow embedding — it wraps a live
+`pyarrow.compute.Expression` and delegates operators to it, where
+`vectorized.py` built inspectable nodes. Overloading `==` to return a
+non-boolean is standard practice in embedded query DSLs (pandas, SQLAlchemy,
+Polars, ORMs), and it has a standard cost: `__eq__`'s contract is violated,
+and mypy needs a `type: ignore[override]`.
 
 The `join` method is also worth reading. Arrow's hash join neither preserves
 row order nor keeps both key columns by default, while this repo's semantics
