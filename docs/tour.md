@@ -129,8 +129,10 @@ generated kernel, which is worth reading alongside the module.
 
 Two parts deserve attention. The first is the produce/consume pattern (from
 Neumann's HyPer compiler): each plan node generates its loop or guard and
-delegates the loop body to its parent through a callback, so the pipeline
-becomes one loop nest with no intermediate row representation. The second is
+delegates the loop body to its parent through a callback, so each pipeline
+becomes one loop nest with no intermediate row representation. A join breaks
+the pipeline: the kernel first runs the right side into column buffers, then
+the main loop nest scans them — both halves generated code. The second is
 the mechanics of generating code at runtime: the kernel is built as a Python
 `ast` tree — a deep embedding of Python itself, manipulated as data like the
 plan — using a small quasiquote helper (`ast.parse` for templates, a
