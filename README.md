@@ -3,32 +3,75 @@
 > [!WARNING]
 > Written with lots of help from Claude. I've reviewed most of the implementations in some depth, but less so the last three (codegen, vectorized, arrow) and claude-writeup.md is mostly Claude's work from my outline.
 
+Thirteen implementations of the same tiny dataframe API — `filter`, inner
+`join`, `limit` — each around a hundred lines, each embedding the query
+language in Python a different way. Every one runs the same query:
 
-Small dataframe implementations, each around a hundred lines, illustrating
-different ways to embed a query DSL in Python. They all run the same query:
-join two OpenFlights tables, filter, and take the first few rows. Each module
-in `src/micro_dataframes/` is self-contained, and each has a runnable example
-in `examples/`.
+```python
+routes.join(airlines, left_on="route-airline-id", right_on="airline-id")
+      .filter("codeshare", lambda v: v == "Y")
+      .filter("name", lambda v: v == "American Airlines")
+      .limit(3)
+```
 
-## Simplifying assumptions
+What changes from file to file is what that expression *is* inside Python: a
+finished table, a pipeline of generators, a plan tree that gets optimized
+and interpreted, a generated Python kernel, or calls into a columnar
+backend. Everything else — API, semantics, even the join algorithm — is
+held constant, so diffing any two implementations shows exactly what one
+design decision costs and buys.
 
-All implementations share these, so the differences between files are
-embedding and execution style, not features or algorithms:
+This is teaching material, not a library. It may be useful if you want to
+understand:
 
-- The only operations are `filter`, inner `join`, and `limit` — no select,
-  group-by, aggregation, or sort.
-- Row order is undefined. There is no order-by, so `limit(3)` may return any
-  three matching rows.
-- Joins are single-key equality joins, and the joined tables are assumed to
-  have disjoint column names.
-- Every implementation uses the same join algorithm: a hash join that builds
-  an index over the right input and probes it with the left.
-- Data is small and fully in memory; every row has every column, and there
-  are no nulls. The CSV loader keeps every value as a string.
-- When errors are reported (e.g. a misspelled column name) is deliberately
-  unspecified — it varies by embedding, and
-  `tests/test_error_staging.py` records where each one fails.
+- how lazy dataframe libraries (Polars, Spark, dask) are structured, and
+  why pandas can't reorder your query but Polars can;
+- how query engines interpret, compile, or vectorize plans;
+- how to design an embedded DSL in Python, and what each choice trades away.
 
+## Getting started
+
+Each module in `src/micro_dataframes/` is self-contained and has a runnable
+example in `examples/`:
+
+```
+uv run python examples/codeshare_eager.py
+```
+
+A short path through the code: `eager.py` (no query representation at all),
+then `lazy_pull.py` (queries become streaming computations), then
+`deep_pushdown.py` (queries become data, and an optimizer appears), then
+`fluent_pushdown.py` (the user-facing surface and the representation
+decouple — the architecture of real lazy dataframe libraries). After that,
+follow whatever interests you: the implementation table below is in a
+sensible reading order, and [`claude-writeup.md`](claude-writeup.md) works
+through the ideas in depth, with exercises and further reading.
+
+`tests/` runs the same queries through every implementation and asserts they
+agree; `benchmarks/codeshare_bench.py` measures what the design differences
+cost on the full data.
+
+## The dimensions
+
+The write-up covers four, briefly:
+
+- **Syntax.** Nested function calls, raw constructors, fluent method
+  chains, operator overloading. Independent of everything below: the same
+  fluent surface appears here over an eager backend, a lazy one, and a
+  plan-building one.
+- **What a query expression denotes.** Its result (`eager`), a computation
+  to run later (`lazy_pull`, `lazy_push` — and pull vs push is its own
+  story), or a data structure describing the query (`deep` and everything
+  after). This is the shallow vs deep embedding distinction.
+- **What visibility buys.** Each capability needs to see a certain amount
+  of the user's program: streaming alone removes intermediate tables and
+  enables early exit; a plan tree enables predicate pushdown; holding the
+  whole plan enables compiling it to a fused kernel; making predicates data
+  (instead of opaque lambdas) enables vectorized execution.
+- **Extensibility.** Adding a new operator is free in the open
+  function-based embedding, needs monkey-patching or an escape hatch behind
+  a fluent class, and undermines the optimizer in a deep one. The
+  expression problem, in miniature.
 
 ## Implementations
 
@@ -53,24 +96,24 @@ Two examples extend implementations from the outside:
 functional version, and `codeshare_monkeypatch.py` adds one to `lazy_pull` by
 assigning a method onto the class at runtime.
 
-Each implementation has a corresponding example program in `examples`. Run like:
+## Simplifying assumptions
 
-```
-uv run python examples/codeshare_eager.py
-```
+All implementations share these, so the differences between files are
+embedding and execution style, not features or algorithms:
 
-## Extras
-
-These are kept separate from the implementations and examples:
-
-- `claude-writeup.md` — what the implementations show, organized by
-  concept: syntax, shallow vs deep, optimizations, extensibility, with
-  exercises and further reading. The table above is in a sensible reading
-  order.
-- `tests/` — differential tests running the same queries through every
-  implementation, plus tests pinning down when each embedding reports errors.
-- `benchmarks/` — timings comparing no optimization, predicate pushdown,
-  the compiled kernel, and the two columnar versions.
+- The only operations are `filter`, inner `join`, and `limit` — no select,
+  group-by, aggregation, or sort.
+- Row order is undefined. There is no order-by, so `limit(3)` may return any
+  three matching rows.
+- Joins are single-key equality joins, and the joined tables are assumed to
+  have disjoint column names.
+- Every implementation uses the same join algorithm: a hash join that builds
+  an index over the right input and probes it with the left.
+- Data is small and fully in memory; every row has every column, and there
+  are no nulls. The CSV loader keeps every value as a string.
+- When errors are reported (e.g. a misspelled column name) is deliberately
+  unspecified — it varies by embedding, and
+  `tests/test_error_staging.py` records where each one fails.
 
 ## Data
 
