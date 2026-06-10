@@ -3,9 +3,9 @@
 > [!WARNING]
 > Written with lots of help from Claude. I've reviewed most of the implementations in some depth, but less so the last three (codegen, vectorized, arrow) and claude-writeup.md is mostly Claude's work from my outline.
 
-Thirteen implementations of the same tiny dataframe API — `filter`, inner
-`join`, `limit` — each around a hundred lines, each embedding the query
-language in Python a different way. Every one runs the same query:
+Thirteen small implementations of the same dataframe API (`filter`, inner
+`join`, `limit`), around a hundred lines each. They differ in how the query
+language is embedded in Python. All of them run this query:
 
 ```python
 routes.join(airlines, left_on="route-airline-id", right_on="airline-id")
@@ -14,15 +14,13 @@ routes.join(airlines, left_on="route-airline-id", right_on="airline-id")
       .limit(3)
 ```
 
-What changes from file to file is what that expression *is* inside Python: a
-finished table, a pipeline of generators, a plan tree that gets optimized
-and interpreted, a generated Python kernel, or calls into a columnar
-backend. Everything else — API, semantics, even the join algorithm — is
-held constant, so diffing any two implementations shows exactly what one
-design decision costs and buys.
+The implementations differ in what that expression evaluates to: a finished
+table, a pipeline of generators, a plan tree that gets optimized and
+interpreted, a generated Python kernel, or calls into a columnar backend.
+The API, the semantics, and even the join algorithm are the same everywhere,
+so comparing two files isolates a single design decision.
 
-This is teaching material, not a library. It may be useful if you want to
-understand:
+The code is written to be read, and may be useful if you want to understand:
 
 - how lazy dataframe libraries (Polars, Spark, dask) are structured, and
   why pandas can't reorder your query but Polars can;
@@ -60,9 +58,9 @@ The write-up covers four, briefly:
   fluent surface appears here over an eager backend, a lazy one, and a
   plan-building one.
 - **What a query expression denotes.** Its result (`eager`), a computation
-  to run later (`lazy_pull`, `lazy_push` — and pull vs push is its own
-  story), or a data structure describing the query (`deep` and everything
-  after). This is the shallow vs deep embedding distinction.
+  to run later (`lazy_pull` and `lazy_push`, which also contrast pull- and
+  push-driven streaming), or a data structure describing the query (`deep`
+  and everything after). This is the shallow vs deep embedding distinction.
 - **What visibility buys.** Each capability needs to see a certain amount
   of the user's program: streaming alone removes intermediate tables and
   enables early exit; a plan tree enables predicate pushdown; holding the
@@ -70,8 +68,8 @@ The write-up covers four, briefly:
   (instead of opaque lambdas) enables vectorized execution.
 - **Extensibility.** Adding a new operator is free in the open
   function-based embedding, needs monkey-patching or an escape hatch behind
-  a fluent class, and undermines the optimizer in a deep one. The
-  expression problem, in miniature.
+  a fluent class, and undermines the optimizer in a deep one — a small
+  instance of the expression problem.
 
 ## Implementations
 
