@@ -63,7 +63,7 @@ uv run python examples/codeshare_eager.py
 
 These are kept separate from the implementations and examples:
 
-- `claude-writup.md` — what the implementations show, organized by
+- `claude-writeup.md` — what the implementations show, organized by
   concept: syntax, shallow vs deep, optimizations, extensibility, with
   exercises and further reading. The table above is in a sensible reading
   order.
