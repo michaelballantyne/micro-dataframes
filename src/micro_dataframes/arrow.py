@@ -1,6 +1,3 @@
-from __future__ import annotations
-
-from dataclasses import dataclass
 from typing import Any
 
 import pyarrow as pa
@@ -14,30 +11,34 @@ import pyarrow.compute as pc
 # Expr node holds a single pc.Expression value and simply delegates to it.
 
 
-@dataclass(frozen=True)
-class Expr:
-    """A column expression that translates to a pyarrow.compute.Expression."""
+def _unwrap(other: object) -> object:
+    # If the right-hand operand is itself an Expr, peel off the pc.Expression
+    # so that pyarrow receives two pc.Expression objects (column-to-column).
+    return other._expr if isinstance(other, Expr) else other
 
-    _expr: pc.Expression
+
+class Expr:
+    def __init__(self, expr: pc.Expression) -> None:
+        self._expr = expr
 
     # Comparisons — return Expr, not bool.
     def __eq__(self, other: object) -> Expr:  # type: ignore[override]
-        return Expr(self._expr == other)
+        return Expr(self._expr == _unwrap(other))
 
     def __ne__(self, other: object) -> Expr:  # type: ignore[override]
-        return Expr(self._expr != other)
+        return Expr(self._expr != _unwrap(other))
 
     def __lt__(self, other: object) -> Expr:
-        return Expr(self._expr < other)
+        return Expr(self._expr < _unwrap(other))
 
     def __le__(self, other: object) -> Expr:
-        return Expr(self._expr <= other)
+        return Expr(self._expr <= _unwrap(other))
 
     def __gt__(self, other: object) -> Expr:
-        return Expr(self._expr > other)
+        return Expr(self._expr > _unwrap(other))
 
     def __ge__(self, other: object) -> Expr:
-        return Expr(self._expr >= other)
+        return Expr(self._expr >= _unwrap(other))
 
     # Boolean combinators.
     def __and__(self, other: Expr) -> Expr:
@@ -49,12 +50,8 @@ class Expr:
     def __invert__(self) -> Expr:
         return Expr(~self._expr)
 
-    def __hash__(self) -> int:
-        return hash(str(self._expr))
-
 
 def col(name: str) -> Expr:
-    """Reference a column by name, returning an Expr for building filter predicates."""
     return Expr(pc.field(name))
 
 
