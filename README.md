@@ -47,11 +47,6 @@ uv run python examples/codeshare_eager.py
 | `vectorized.py` | Columnar interpreter, selection vectors | Whole-column kernels are the only place row loops live; operators compose them. `filter` and `limit` shrink a selection vector instead of copying data; `join` is a hash join over index vectors. The predicate DSL is a small deep embedding evaluated to a mask. |
 | `arrow.py` | Eager on Arrow kernels | The same execution model as `vectorized.py`, delegated to `pyarrow`'s compute kernels. `filter` takes the expression DSL (`col("x") == "Y"`) instead of a lambda, because the backend can't run opaque Python functions over its columns. |
 
-If you only read four: `eager`, `lazy_pull`, `deep_pushdown`,
-`fluent_pushdown`. That covers shallow vs deep, lazy vs eager, optimization,
-and the frontend/backend split; `pipe_rows` is the best fifth, and `codegen`
-and `vectorized`/`arrow` are the capstones.
-
 Two examples extend implementations from the outside:
 `codeshare_functional_extension.py` adds a `distinct` operator to the
 functional version, and `codeshare_monkeypatch.py` adds one to `lazy_pull` by

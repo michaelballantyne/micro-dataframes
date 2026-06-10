@@ -346,23 +346,6 @@ pure-Python version, with the layers it peeled measurable along the way
 (per-row dicts and dispatch from `lazy_pull`'s 0.19s, the remaining
 interpretation from `fluent_pushdown`'s 0.13s).
 
-A note on how the generator itself is written, since three styles were
-tried before settling on this one. Building the kernel as source *strings*
-is the shortest by a wide margin and is what much real-world Python codegen
-does (the standard library's `dataclasses` builds method source in an
-f-string and `exec`s it) — but there is no intermediate structure to
-inspect, and mistakes surface only as syntax errors at `compile()` time.
-A template library (libcst) handles source rewriting well but is a large
-dependency and cannot splice a multi-statement block into a template. True
-quasiquoting (mcpyrate) requires installing a macro-expanding import hook.
-The stdlib `ast` approach was kept because the kernel is then built as a
-tree and manipulated as data — the same move the plan representation
-makes, so the module teaches one idea twice — at the cost of two
-subtleties: substituted fragments are deep-copied so one fragment can
-appear in several places, and generated identifiers are interpolated into
-the template strings (safe because the generator mints them) while data and
-fragments go through placeholders.
-
 ### 3.5 Vectorized operations: amortize instead of eliminate
 
 There is a second answer to interpretive overhead: keep the interpreter, but
@@ -483,29 +466,6 @@ that machinery deleted itself and the join became a single delegated call.
 The general point: every guarantee in a DSL's contract constrains all
 present and future backends, including the ones you haven't imagined.
 Semantics you don't promise are implementation freedom you keep.
-
-## 6. Why a query language?
-
-Any DSL could illustrate embeddings; queries earn their place here. The
-domain is familiar, the deep representation (relational plans) is the
-textbook one, predicate pushdown is a real and famous optimization that
-fits in fifteen lines, and every step has a production system to point at:
-pandas is `eager`, Polars' lazy API is `fluent_pushdown`, DuckDB and HyPer
-are `codegen`, pyarrow is `arrow`. It is hard to find another domain where
-laziness, optimization, staging, and extensibility all show up in this
-little code.
-
-The serious rival is tensor expressions — eager-to-lazy-to-compiled is the
-same progression as PyTorch to `torch.compile`, and fusion is even better
-motivated there — but tensor semantics bring in shapes and broadcasting,
-a lot of incidental complexity. Parser combinators are the classic
-shallow/deep example, but their optimization story is weaker. Queries are
-the better trade.
-
-One limitation to admit: column names here are strings, so the
-static-typing dimension of embeddings — typed schemas, errors at
-type-checking time — is mostly out of reach in Python and goes
-undemonstrated.
 
 ## Map
 
