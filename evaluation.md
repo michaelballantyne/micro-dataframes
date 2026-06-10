@@ -10,14 +10,13 @@ minutes:
 
 1. `eager.py` — no embedding at all; the API is just methods that compute.
 2. `functional.py` / `lazy_pull.py` / `lazy_push.py` — shallow embeddings;
-   a query is a function. Laziness appears, and pull vs push is a genuinely
-   instructive duality (`limit` is one line in pull and needs an exception in
-   push).
-3. `deep.py` / `deep_pushdown.py` — the program becomes data, and the
-   immediate payoff is an optimizer that couldn't exist before.
+   a query is a function. Laziness appears, and the pull/push contrast is
+   instructive (`limit` is one line in pull and needs an exception in push).
+3. `deep.py` / `deep_pushdown.py` — the program becomes data, which makes an
+   optimizer possible for the first time.
 4. `fluent_pushdown.py` — the user-facing surface and the representation
-   decouple: fluent frontend, plan backend. This is the shape of Polars,
-   Spark, and every modern lazy dataframe.
+   decouple: fluent frontend, plan backend. This is the shape of Polars'
+   lazy API, Spark DataFrames, and dask.
 5. `codegen.py` / `arrow.py` — the plan is retargeted: compiled to a fused
    Python kernel, or executed on vectorized Arrow kernels.
 
@@ -30,35 +29,38 @@ sanctioned opaque escape hatch) trades away either static checking or
 optimizer freedom. `pipe_rows.py` makes the optimizer's conservatism around
 opaque code concrete in five lines of the `optimize` pass.
 
-The single most important idea, which the collection now demonstrates
-end-to-end, is: **what the system can do is bounded by how much of the user's
-program it can see.** A lambda predicate is opaque, so the interpreter can
-only call it; a `(column, lambda)` pair exposes just enough structure for
-pushdown; the `arrow` version's expression DSL exposes the whole predicate,
-which is exactly what a vectorized or compiling backend needs. The `filter`
-API changing shape across versions is not an inconsistency — it is the lesson.
+The most important idea, which the collection now demonstrates end-to-end:
+what the system can do is bounded by how much of the user's program it can
+see. A lambda predicate is opaque, so the interpreter can only call it; a
+`(column, lambda)` pair exposes just enough structure for pushdown; the
+`arrow` version's expression DSL exposes the whole predicate, which is what a
+vectorized or compiling backend needs. The change in `filter`'s signature
+across versions is the visible trace of this.
 
-## What's missing
+## What was missing
 
-- **Tests.** `tests/` is empty. A differential test running the same queries
-  through every implementation and asserting identical results would (a) catch
-  regressions and (b) state the shared semantics explicitly, which is itself a
-  teaching point. This is the highest-value addition.
-- **Prose.** Until now the rationale for each module lived only in commit
-  messages. A module docstring per file saying what it demonstrates and what
-  to compare it against would let the files stand alone as course material.
-- **A visible payoff for optimization.** Pushdown and fusion are claimed, not
-  shown. A tiny benchmark (or even printing row counts flowing through each
-  operator) would make `eager` vs `fluent_pushdown` vs `codegen` differ
-  observably, not just architecturally. With `limit(3)` and a pushed filter,
-  the numbers are dramatic.
-- **Error staging.** When does a typo'd column name fail? Immediately in
+(The first four items below have since been filled in on this branch, in
+`tests/`, `benchmarks/`, and `docs/` — kept separate from the implementations
+so they are easy to drop.)
+
+- **Tests.** `tests/` was empty. A differential test running the same queries
+  through every implementation and asserting identical results catches
+  regressions and states the shared semantics explicitly, which is itself a
+  teaching point.
+- **Prose.** The rationale for each module lived only in commit messages.
+  Notes per module saying what it demonstrates and what to compare it against
+  let the files stand alone as course material (now in `docs/tour.md`).
+- **Observable optimization.** Pushdown and fusion were claimed, not shown. A
+  small benchmark makes `eager` vs `fluent_pushdown` vs `codegen` differ
+  measurably, not just architecturally.
+- **Error staging.** When does a misspelled column name fail? Immediately in
   `eager`, at `collect()` in the lazy versions, inside generated code in
-  `codegen`. Error locality is a classic embedding trade-off and the material
-  is already here; one example would surface it.
+  `codegen`. Error locality is a standard embedding trade-off and the
+  material was already here; `tests/test_error_staging.py` now records it.
 - **Projection.** A `select` operator would enable projection pushdown, the
   other canonical optimization, and would make the `schema` pass do more work.
-  Probably the right cut for size, but it is the most natural extension.
+  Probably the right cut for size, but it is the most natural extension, and
+  it remains open as an exercise.
 
 ## Confusing or wrong
 
@@ -107,12 +109,42 @@ reach in Python and goes undemonstrated. And the row-ordered semantics
 preserve nested-loop join order that a real engine would not promise.
 
 Alternatives considered: parser combinators (the classic shallow/deep example,
-but the optimization story is weaker and the domain is less universally
-familiar), build systems, and tensor expressions. Tensor DSLs are the one
-serious rival — eager-to-lazy-to-fused-codegen is exactly the
-PyTorch-to-`torch.compile` story students already live in, and "fusion" is
-better motivated there. But tensor semantics drag in shapes and broadcasting,
-which would triple the incidental complexity. Queries are the better trade.
+but the optimization story is weaker and the domain less familiar to most
+students), build systems, and tensor expressions. Tensor DSLs are the one
+serious rival — eager-to-lazy-to-fused-codegen is the same progression as
+PyTorch to `torch.compile`, which many students already know, and fusion is
+better motivated there. But tensor semantics bring in shapes and
+broadcasting, a lot of incidental complexity. Queries are the better trade.
+
+## How the codegen should be done
+
+Three styles were tried for `codegen.py` before settling on one:
+
+1. **String concatenation** (an indentation-tracking emitter, then f-string
+   blocks with `textwrap.indent`). Shortest by a wide margin, and the
+   produce/consume structure shows clearly because there is little machinery
+   around it. But there is no intermediate structure to inspect — mistakes
+   (a missing `repr()` around a column name, a dropped indent) surface only
+   as syntax errors at `compile()` time.
+2. **libcst templates** (`parse_template_statement`). Works, but it is a
+   sizable dependency aimed at source rewriting, its templates can't splice
+   a multi-statement block into a body slot (every loop needs a follow-up
+   `with_changes(body=...)`), and an empty body is a runtime error. The
+   friction outweighs what it adds here.
+3. **stdlib `ast` with a small homemade quasiquote helper** — templates via
+   `ast.parse`, placeholders spliced by a `NodeTransformer`, `ast.unparse`
+   for display, `compile()` on the tree directly. This is what was kept. The
+   kernel is built as a tree and manipulated as data, which is the same move
+   the plan representation makes, so the module teaches one idea twice. Two
+   subtleties remain and are worth knowing about: substituted fragments are
+   deep-copied so a fragment can appear in several places, and generated
+   identifiers are interpolated into the template strings (they are minted
+   by the generator, so this is safe) while data and AST fragments go
+   through placeholders.
+
+True quasiquoting (mcpyrate) was also considered but requires installing a
+macro-expanding import hook, which is too invasive for a repo whose modules
+should be plain Python.
 
 ## Smaller notes
 

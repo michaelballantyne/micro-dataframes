@@ -20,17 +20,28 @@ uv run python examples/codeshare_eager.py
 | `query_forward.py` | Fluent, implicit lift | Same split, but `DataFrame` forwards query methods to `IntermediateResult`, so lifting is invisible at the call site. |
 | `lazy_pull.py` | Shallow embedding, pull | `IntermediateResult` wraps a function returning a row iterator. Lazy, streaming, Volcano-style: consumers pull rows on demand. |
 | `lazy_push.py` | Shallow embedding, push | The dual: producers push rows into consumer callbacks. `limit` must escape with an exception because a consumer can't stop its producer. |
-| `deep.py` | Deep embedding | Queries are `Plan` dataclasses (`Source`, `Filter`, `Join`, `Limit`) walked by an interpreter. The program is data. |
-| `deep_pushdown.py` | Deep embedding + optimizer | Adds a `schema` pass and an `optimize` pass that pushes filters below joins. The payoff of having the program as data. |
+| `deep.py` | Deep embedding | Queries are `Plan` dataclasses (`Source`, `Filter`, `Join`, `Limit`) walked by an interpreter. |
+| `deep_pushdown.py` | Deep embedding + optimizer | Adds a `schema` pass and an `optimize` pass that pushes filters below joins — possible only because the query is a data structure. |
 | `fluent_pushdown.py` | Fluent frontend, deep backend | The fluent interface builds `Plan` nodes instead of executing; `collect()` optimizes then interprets. Roughly how Polars' lazy API is shaped. |
 | `pipe_rows.py` | Deep + sanctioned extension point | `fluent_pushdown` plus `pipe_rows(fn)`, an escape hatch taking an opaque iterator transformer. The optimizer must treat it as a barrier. |
-| `codegen.py` | Deep embedding + code generation | After pushdown, compiles the plan to one fused Python function (nested loops, inline filters, limit counter) via `compile`/`exec`. Lambdas and source columns are injected into the generated code's environment. |
+| `codegen.py` | Deep embedding + code generation | After pushdown, compiles the plan to one fused Python function: nested loops, inline filter guards, a limit counter. The kernel is built as a Python AST with a small quasiquote helper and `compile`/`exec`; lambdas and source columns are injected into its namespace. The example prints the generated kernel. |
 | `arrow.py` | Eager on Arrow kernels | Executes on `pyarrow` compute kernels. `filter` takes a small expression DSL (`col("x") == "Y"`) instead of a lambda, because the backend can't run opaque Python functions over its columns. |
 
 Two examples extend implementations from the outside:
 `codeshare_functional_extension.py` adds a `distinct` operator to the
 functional version, and `codeshare_monkeypatch.py` adds one to `lazy_pull` by
 assigning a method onto the class at runtime.
+
+## Extras
+
+These are kept separate from the implementations and examples:
+
+- `docs/tour.md` — a suggested reading order with notes on each module.
+- `tests/` — differential tests running the same queries through every
+  implementation, plus tests pinning down when each embedding reports errors.
+- `benchmarks/` — timings comparing no optimization, predicate pushdown,
+  the compiled kernel, and Arrow.
+- `evaluation.md` — notes on the collection as teaching material.
 
 ## Data
 

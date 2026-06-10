@@ -1,13 +1,3 @@
-# Plan AST -> Python AST -> compile
-#
-# The pipeline is:
-#   Plan (dataclass AST) -> produce() -> Python ast.Module -> compile() -> kernel()
-#
-# Runtime values that cannot be represented as literals (column dicts,
-# predicates) are injected into the kernel's exec namespace under generated
-# names (source0, pred0, …) exactly as before.  The kernel is compiled with
-# compile(module, "<plan-codegen>", "exec") and inspectable via ast.unparse().
-
 import ast
 import copy
 from collections.abc import Callable
@@ -83,10 +73,10 @@ class IntermediateResult(Query):
         _, kernel = compile_plan(optimize(self._plan))
         return DataFrame(kernel())
 
+    # The generated kernel source, for inspection.
     def generated_source(self) -> str:
-        """Return the generated kernel source so it can be printed and inspected."""
-        src, _ = compile_plan(optimize(self._plan))
-        return src
+        source, _ = compile_plan(optimize(self._plan))
+        return source
 
 
 # --- Plan nodes (the deep embedding) ---
@@ -159,309 +149,229 @@ def optimize(plan: Plan) -> Plan:
             return plan
 
 
-# --- Quasiquote helpers ---
+# --- Quasiquotation over the stdlib ast module ---
 #
-# quote/quote_expr implement quasiquotation in ~30 lines of stdlib:
-# the template string is the "quote" (a literal AST fragment) and the
-# keyword arguments are the "unquotes" (substitutions spliced into it).
+# quote(template, **subs) parses a template string into Python AST and
+# substitutes the keyword arguments into it: the template is the quoted
+# code, the substitutions are the unquotes.  A placeholder is a bare Name:
 #
-# quote(template, **subs) -> list[ast.stmt]
-#   Parse the template with ast.parse, walk it with a NodeTransformer:
-#   - A Name whose id is a key in subs is replaced by the given ast.expr.
-#   - An Expr statement whose sole child is such a Name is *spliced* with
-#     the given list[ast.stmt], flattening it into the enclosing block.
-#   Substituted nodes are deep-copied so the same expression can safely
-#   appear in multiple places in the tree.
+#   - used as an expression, it is replaced by the given ast.expr;
+#   - alone as an expression statement, it is replaced by the given
+#     list of statements (splicing them into the enclosing block).
 #
-# quote_expr(template, **subs) -> ast.expr
-#   Same idea for a single expression (ast.parse mode="eval").
+# Identifiers we mint ourselves (loop indices, counters, injected names)
+# don't need placeholders: callers interpolate them into the template with
+# an f-string.  Placeholders are for the two things f-strings can't carry
+# safely: arbitrary data (rendered as ast.Constant) and previously built
+# AST fragments.
 
-# Substitution value: either a single expression or a block of statements.
 _SubVal = ast.expr | list[ast.stmt]
-_SubMap = dict[str, _SubVal]
 
 
 class _QuoteTransformer(ast.NodeTransformer):
-    """Walk a parsed template and splice in unquoted sub-expressions/statements."""
-
-    def __init__(self, subs: _SubMap) -> None:
+    def __init__(self, subs: dict[str, _SubVal]) -> None:
         self._subs = subs
 
     def visit_Expr(self, node: ast.Expr) -> ast.stmt | list[ast.stmt]:
-        # If this expression-statement is solely a placeholder Name, splice
-        # the list[ast.stmt] substitution into the enclosing block.
+        # A statement consisting solely of a placeholder Name splices in a
+        # block of statements.  (Returning a list from a visit method makes
+        # NodeTransformer splice it into the parent's statement list.)
         if isinstance(node.value, ast.Name):
-            key = node.value.id
-            if key in self._subs:
-                val = self._subs[key]
-                if isinstance(val, list):
-                    return val  # splice: NodeTransformer extends the parent list
+            val = self._subs.get(node.value.id)
+            if isinstance(val, list):
+                return val
         self.generic_visit(node)
         return node
 
-    def visit_Name(self, node: ast.Name) -> ast.expr | ast.Name:
-        # Replace a placeholder Name with an expression substitution.
-        # When the substitution is itself a Name, inherit the template's ctx
-        # so that Store/Del/Load positions remain syntactically correct (e.g.
-        # the target of `CTR += 1` must keep Store, even though we pass Load).
-        key = node.id
-        if key in self._subs:
-            val = self._subs[key]
-            if isinstance(val, ast.expr):
-                replacement = copy.deepcopy(val)
-                if isinstance(replacement, ast.Name):
-                    replacement.ctx = node.ctx
-                return replacement
+    def visit_Name(self, node: ast.Name) -> ast.expr:
+        # A placeholder Name in expression position is replaced.  Deep-copy
+        # so the same fragment can appear at several places in the tree.
+        val = self._subs.get(node.id)
+        if isinstance(val, ast.expr):
+            return copy.deepcopy(val)
         return node
 
 
 def quote(template: str, /, **subs: _SubVal) -> list[ast.stmt]:
-    """Parse *template* and substitute placeholders with *subs*.
-
-    Placeholders are bare ``Name`` nodes whose ``id`` matches a keyword
-    argument key.  When the value is an ``ast.expr`` the Name is replaced
-    in-place; when it is a ``list[ast.stmt]`` and the Name appears as the
-    sole child of an ``Expr`` statement, the whole statement is *spliced*
-    (replaced by the list of statements).  This is quasiquotation: the
-    template is the quote, the keyword arguments are the unquotes.
-    """
-    tree = ast.parse(template)
-    new_tree = _QuoteTransformer(subs).visit(tree)
-    assert isinstance(new_tree, ast.Module)
-    return new_tree.body
+    tree = _QuoteTransformer(subs).visit(ast.parse(template))
+    assert isinstance(tree, ast.Module)
+    return tree.body
 
 
 def quote_expr(template: str, /, **subs: _SubVal) -> ast.expr:
-    """Parse *template* as a single expression and substitute placeholders."""
-    tree = ast.parse(template, mode="eval")
-    new_tree = _QuoteTransformer(subs).visit(tree)
-    assert isinstance(new_tree, ast.Expression)
-    return new_tree.body
+    tree = _QuoteTransformer(subs).visit(ast.parse(template, mode="eval"))
+    assert isinstance(tree, ast.Expression)
+    return tree.body
 
 
-# --- Code generation (Neumann-style produce/consume) ---
+# --- Code generation (produce/consume) ---
 #
-# Pattern: produce(plan, consume, ...) recursively builds AST statements for a
-# plan node.  Each node emits its *outer* structure (loop headers, if-guards)
-# and then calls consume(col_vars) at the point where one logical row is
-# available.  consume is a callback supplied by the *parent* operator that
-# returns whatever statements the parent needs to do with that row.  The
-# outermost consume emits the per-column out[col].append(...) calls.  The
-# whole pipeline collapses into a single flat function with no intermediate row
-# dicts — that is the fusion.
+# produce(plan, consume, ...) builds the kernel's statements recursively.
+# Each plan node contributes its outer structure (a loop header, an
+# if-guard) and calls consume(col_vars) at the point where one row is
+# available; consume is supplied by the parent operator and returns the
+# statements the parent wants run for that row.  The outermost consume
+# appends to the output columns.  Each pipeline ends up as one loop nest
+# with no intermediate row representation: that is the fusion (the pattern
+# comes from Neumann's HyPer compiler).  Joins break the pipeline: the
+# right side becomes its own loop nest that fills buffers, which the left
+# pipeline then scans.
 #
-# col_vars: dict[column_name -> ast.expr] carries the current binding of each
-# column as a *source expression* (e.g. source0['x'][_i0] as an AST node).
-# No intermediate locals are emitted: filters guard on the expression directly,
-# joins compare expressions, and the output appends expressions.  This removes
-# all dead binds — a row rejected by a filter costs only the predicate call —
-# and makes the generated code self-describing since column names appear
-# literally in the source.
+# col_vars maps each column name to the AST expression that reads its
+# current value (e.g. source0['x'][_i0]).  No locals are bound in the
+# kernel: filters, join comparisons, and output appends all use the
+# expressions directly, so a row rejected by a filter costs only the
+# predicate call.
 #
-# Join fusion: produce(left, ...) receives a consume callback that recursively
-# calls produce(right, inner, ...).  inner emits the equality guard and then
-# calls the parent consume with merged col_vars (right side wins name
-# collisions, mirroring `left_row | right_row`).  The generated kernel contains
-# all the nested loops directly; pushed-down right-side filters appear as
-# if-guards inside the inner loop.
-#
-# Trade-off: the right side of a join is re-scanned for every left row (a real
-# engine would break the pipeline and materialise the build side into a hash
-# table; here we keep everything in one fused kernel for simplicity).
-#
-# Runtime values that cannot be rendered as literals (column dicts, predicates)
-# are injected into the kernel's exec namespace via `ns`.  Generated code
-# references them by their injected names.
+# Runtime values that can't appear as literals in source code — the column
+# dicts and the predicate functions — are injected into the namespace the
+# kernel is exec'd in, under generated names (source0, pred0, ...).  The
+# generated code refers to them by name.
 
-
-# A consume callback receives the current col_vars mapping and returns the inner body.
+# A consume callback takes the current col_vars and returns the inner body.
 Consume = Callable[[dict[str, ast.expr]], list[ast.stmt]]
 
 
-@dataclass
-class _State:
-    """Monotonically-increasing counters for fresh generated names."""
-    src: int = 0    # source0, source1, …  (injected column dicts)
-    pred: int = 0   # pred0, pred1, …  (injected predicate callables)
-    loop: int = 0   # _i0, _i1, …  (loop index variables, one per Source/Join-right)
-    lim: int = 0    # _lim0, _lim1, …  (limit counter variables)
+# An AST literal for {col: [], ...}.
+def _empty_columns(cols: list[str]) -> ast.expr:
+    return ast.Dict(
+        keys=[ast.Constant(col) for col in cols],
+        values=[ast.List(elts=[]) for _ in cols],
+    )
 
-    def fresh_src(self) -> str:
-        name = f"source{self.src}"
-        self.src += 1
-        return name
 
-    def fresh_pred(self) -> str:
-        name = f"pred{self.pred}"
-        self.pred += 1
-        return name
+# Statements appending each column's current value to target[col].
+def _append_columns(target: str, cols: list[str], cv: dict[str, ast.expr]) -> list[ast.stmt]:
+    stmts: list[ast.stmt] = []
+    for col in cols:
+        stmts += quote(f"{target}[COL].append(VAL)", COL=ast.Constant(col), VAL=cv[col])
+    return stmts
 
-    def fresh_loop(self) -> str:
-        name = f"_i{self.loop}"
-        self.loop += 1
-        return name
 
-    def fresh_lim(self) -> str:
-        name = f"_lim{self.lim}"
-        self.lim += 1
-        return name
+class _NameSupply:
+    # Fresh generated names: fresh("pred") gives pred0, pred1, ...
+    def __init__(self) -> None:
+        self._counts: dict[str, int] = {}
+
+    def fresh(self, prefix: str) -> str:
+        n = self._counts.get(prefix, 0)
+        self._counts[prefix] = n + 1
+        return f"{prefix}{n}"
 
 
 def produce(
     plan: Plan,
     consume: Consume,
     ns: dict[str, Any],
-    st: _State,
+    names: _NameSupply,
     col_vars: dict[str, ast.expr],
 ) -> list[ast.stmt]:
-    """Build AST statements for *plan*, calling consume(col_vars) for each output row."""
     match plan:
         case Source(columns):
-            src = st.fresh_src()
-            idx = st.fresh_loop()
-            # Inject the columns dict directly; generated code indexes it as
-            # source0['col'][_i0] so column names appear literally in the kernel.
+            src = names.fresh("source")
+            i = names.fresh("_i")
+            # Inject the columns dict; the kernel indexes it as
+            # source0['col'][_i0], so column names appear literally.
             ns[src] = columns
-            # Use the first column's list to determine the row count.
-            first_col = next(iter(columns))
+            first = next(iter(columns))
 
             new_cv = dict(col_vars)
             for col in columns:
-                new_cv[col] = quote_expr(
-                    "SRC[COL][I]",
-                    SRC=ast.Name(src, ctx=ast.Load()),
-                    COL=ast.Constant(col),
-                    I=ast.Name(idx, ctx=ast.Load()),
-                )
+                new_cv[col] = quote_expr(f"{src}[COL][{i}]", COL=ast.Constant(col))
 
-            body = consume(new_cv)
             return quote(
-                "for I in range(len(SRC[FIRST])):\n    BODY",
-                I=ast.Name(idx, ctx=ast.Load()),
-                SRC=ast.Name(src, ctx=ast.Load()),
-                FIRST=ast.Constant(first_col),
-                BODY=body,
+                f"for {i} in range(len({src}[FIRST])):\n    BODY",
+                FIRST=ast.Constant(first),
+                BODY=consume(new_cv),
             )
 
         case Filter(child, column, predicate):
-            pred = st.fresh_pred()
+            pred = names.fresh("pred")
             ns[pred] = predicate
 
-            # Wrap the downstream consume in an if-guard; col_vars is a
-            # plain closure variable (not a loop variable) so default-arg
-            # capture is unnecessary.
             def guarded(cv: dict[str, ast.expr]) -> list[ast.stmt]:
-                body = consume(cv)
                 return quote(
-                    "if PRED(VAL):\n    BODY",
-                    PRED=ast.Name(pred, ctx=ast.Load()),
+                    f"if {pred}(VAL):\n    BODY",
                     VAL=cv[column],
-                    BODY=body,
+                    BODY=consume(cv),
                 )
 
-            return produce(child, guarded, ns, st, col_vars)
+            return produce(child, guarded, ns, names, col_vars)
 
         case Join(left, right, left_on, right_on):
-            # Fused nested-loop join: produce the left side, and inside its
-            # consume produce the right side with an equality guard.
-            # Trade-off noted above: right side is rescanned per left row.
+            # The join is a pipeline breaker: the right side's pipeline runs
+            # first and materializes into column buffers, then the left
+            # pipeline loops over the buffers under an equality guard.  Both
+            # pipelines are generated code in the same kernel.  (A real
+            # engine would index the buffers by key in a hash table rather
+            # than scan them per left row.)
+            buf = names.fresh("_right")
+            right_cols = sorted(schema(right))
+
+            build = quote(f"{buf} = INIT", INIT=_empty_columns(right_cols)) + produce(
+                right, lambda cv: _append_columns(buf, right_cols, cv), ns, names, {}
+            )
+            j = names.fresh("_i")
+
             def join_consume(left_cv: dict[str, ast.expr]) -> list[ast.stmt]:
-                left_expr = left_cv[left_on]
-
-                def inner(right_cv: dict[str, ast.expr]) -> list[ast.stmt]:
-                    right_expr = right_cv[right_on]
-                    # Right wins on name collision (mirrors left_row | right_row).
-                    merged = left_cv | right_cv
-                    body = consume(merged)
-                    return quote(
+                right_cv = {
+                    col: quote_expr(f"{buf}[COL][{j}]", COL=ast.Constant(col))
+                    for col in right_cols
+                }
+                # Right wins name collisions, like left_row | right_row.
+                merged = left_cv | right_cv
+                return quote(
+                    f"for {j} in range(len({buf}[FIRST])):\n    BODY",
+                    FIRST=ast.Constant(right_cols[0]),
+                    BODY=quote(
                         "if L == R:\n    BODY",
-                        L=left_expr,
-                        R=right_expr,
-                        BODY=body,
-                    )
+                        L=left_cv[left_on],
+                        R=right_cv[right_on],
+                        BODY=consume(merged),
+                    ),
+                )
 
-                return produce(right, inner, ns, st, left_cv)
-
-            return produce(left, join_consume, ns, st, col_vars)
+            return build + produce(left, join_consume, ns, names, col_vars)
 
         case Limit(child, n):
-            ctr = st.fresh_lim()
+            ctr = names.fresh("_lim")
 
             def limited(cv: dict[str, ast.expr]) -> list[ast.stmt]:
-                body = consume(cv)
                 return quote(
-                    "if CTR == N:\n    return out\nCTR += 1\nBODY",
-                    CTR=ast.Name(ctr, ctx=ast.Load()),
+                    f"if {ctr} == N:\n    return out\n{ctr} += 1\nBODY",
                     N=ast.Constant(n),
-                    BODY=body,
+                    BODY=consume(cv),
                 )
 
-            ctr_init = quote("CTR = 0", CTR=ast.Name(ctr, ctx=ast.Load()))
-            return ctr_init + produce(child, limited, ns, st, col_vars)
+            return quote(f"{ctr} = 0") + produce(child, limited, ns, names, col_vars)
 
 
+# The generated kernel source for a plan, for inspection.
 def generated_source(plan: Plan) -> str:
-    """Return the generated kernel source for a plan without executing it."""
-    src, _ = compile_plan(plan)
-    return src
+    source, _ = compile_plan(plan)
+    return source
 
 
+# Compile an optimized plan into a fused kernel.  Returns (source, kernel):
+# the unparsed source for inspection, and the kernel, which returns a
+# columns dict ready to wrap in a DataFrame.
 def compile_plan(plan: Plan) -> tuple[str, Callable[[], dict[str, list[Any]]]]:
-    """Compile an optimised plan into a fused Python kernel.
-
-    Returns *(source, kernel)*.  ``source`` is the generated source for
-    inspection (via ast.unparse); ``kernel()`` executes it and returns a
-    column-oriented dict suitable for passing directly to DataFrame(...).
-    """
     ns: dict[str, Any] = {}
-    st = _State()
-
+    names = _NameSupply()
     out_cols = sorted(schema(plan))
 
-    # Build the out = {col: [], ...} initialiser directly as an AST node.
-    out_init = ast.Assign(
-        targets=[ast.Name("out", ctx=ast.Store())],
-        value=ast.Dict(
-            keys=[ast.Constant(col) for col in out_cols],
-            values=[ast.List(elts=[], ctx=ast.Load()) for _ in out_cols],
+    module = ast.Module(
+        body=quote(
+            "def kernel():\n    out = INIT\n    BODY\n    return out",
+            INIT=_empty_columns(out_cols),
+            # The innermost consume appends each column's value expression.
+            BODY=produce(plan, lambda cv: _append_columns("out", out_cols, cv), ns, names, {}),
         ),
-        lineno=0,
-        col_offset=0,
+        type_ignores=[],
     )
-
-    # The innermost consume: append each column's expression to out[col].
-    def emit_row(cv: dict[str, ast.expr]) -> list[ast.stmt]:
-        stmts: list[ast.stmt] = []
-        for col in out_cols:
-            if col in cv:
-                stmts += quote(
-                    "out[COL].append(VAL)",
-                    COL=ast.Constant(col),
-                    VAL=cv[col],
-                )
-        return stmts
-
-    body_stmts = produce(plan, emit_row, ns, st, col_vars={})
-    return_stmt = ast.Return(value=ast.Name("out", ctx=ast.Load()))
-
-    func_def = ast.FunctionDef(
-        name="kernel",
-        args=ast.arguments(
-            posonlyargs=[], args=[], vararg=None,
-            kwonlyargs=[], kw_defaults=[], kwarg=None, defaults=[],
-        ),
-        body=[out_init, *body_stmts, return_stmt],
-        decorator_list=[],
-        returns=None,
-        lineno=0,
-        col_offset=0,
-    )
-
-    module = ast.Module(body=[func_def], type_ignores=[])
     ast.fix_missing_locations(module)
 
     source = ast.unparse(module)
-    code = compile(module, "<plan-codegen>", "exec")
-    exec(code, ns)
+    exec(compile(module, "<plan-codegen>", "exec"), ns)
     kernel: Callable[[], dict[str, list[Any]]] = ns["kernel"]
     return source, kernel
