@@ -163,6 +163,21 @@ copy data; they shrink a selection vector (the list of live row indices).
 This is the execution model of DuckDB and Polars, reduced to about a hundred
 lines.
 
+Since every implementation now uses the same hash join, it is fair to ask
+what still separates this from `eager.py` — which was never row-at-a-time
+either (its `filter` already computes a whole-column mask). Three things.
+First, the predicate: eager calls an opaque lambda once per value, while
+here the expression DSL maps onto kernels whose per-element work is just
+the comparison — no Python call inside the loop. Second, materialization:
+every eager operator copies its full result, while `filter` and `limit`
+here never touch the data — they shrink the selection vector, and the
+columns are shared between frames; only `join` and `__getitem__`
+materialize. Third, organization: eager's loops are scattered through its
+operators, while here they live only in the kernels, and the operators are
+composition and bookkeeping. The second point is most of the benchmark gap
+between the two; the third is what makes the DSL necessary, since an
+opaque lambda has nowhere to go when the operators don't loop.
+
 Two things to compare against the rest of the collection. First, lambdas are
 gone again: a per-row predicate would defeat whole-column execution, so
 `filter` takes the `col("x") == "Y"` expression DSL. Here the DSL is a small
