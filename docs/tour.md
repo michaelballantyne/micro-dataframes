@@ -5,6 +5,8 @@ lines. They share one query vocabulary (`filter`, `join`, `limit`, `collect`)
 and one example query (see `examples/`), so the differences between files
 corresponds to differences between embedding styles. This document suggests a
 reading order and points out what to look for in each file.
+[`embeddings.md`](embeddings.md) covers the same ground organized by concept
+instead of by module.
 
 The simplifying assumptions shared by all implementations are listed in the
 README; the two that matter most while reading are that row order is

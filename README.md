@@ -57,6 +57,8 @@ assigning a method onto the class at runtime.
 These are kept separate from the implementations and examples:
 
 - `docs/tour.md` — a suggested reading order with notes on each module.
+- `docs/embeddings.md` — the same material organized by concept: syntax,
+  shallow vs deep, optimizations, extensibility, with further reading.
 - `tests/` — differential tests running the same queries through every
   implementation, plus tests pinning down when each embedding reports errors.
 - `benchmarks/` — timings comparing no optimization, predicate pushdown,
