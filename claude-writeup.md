@@ -21,8 +21,11 @@ subject.
 
 ## 1. Syntax
 
-There are three ways to spell a query in this collection, and the first
-thing to notice is that the spelling is independent of everything else.
+There are three ways to spell a query in this collection. The spelling is
+best thought of as a layer placed over the representation, rather than a
+property of it: most surfaces can sit on top of most of what follows. But
+the layers are not fully independent — this section flags two interactions,
+and section 4 turns on a third.
 
 **Function calls.** In `functional.py`, operators are plain functions from
 query to query, and the query above is nested applications:
@@ -43,9 +46,12 @@ representation. The other two spellings can sit on top of anything.
 **Fluent method chains.** Most of the modules use the pandas-style chain
 shown at the top. The same fluent surface appears over an eager backend
 (`query_forward.py`), a lazy one (`lazy_pull.py`), and a plan-building one
-(`fluent_pushdown.py`) — proof that surface syntax and internal
-representation are separate decisions. Reading order matches execution
-order, which is most of why real libraries choose it.
+(`fluent_pushdown.py`) — the same face over three different
+representations. Reading order matches execution order, which is most of
+why real libraries choose it. But the choice is not consequence-free:
+putting a class between the user and the representation decides whether
+user-defined operators can ever look like built-in ones, which is the
+second interaction, taken up in section 4.
 
 Two further syntax decisions show up once you commit to fluent chains.
 
@@ -164,7 +170,7 @@ plan representation, transformation passes, execution backend — each
 replaceable separately. This is the shape of every modern lazy dataframe
 library.
 
-### 2.4 Depth is per-construct, not global
+### 2.4 Depth is per-construct, and styles layer
 
 It would be a mistake to call any of these versions simply "deep." In
 `fluent_pushdown.py` the *operators* are deep — `Filter` is a node — but the
@@ -180,6 +186,18 @@ little tree of `Compare`/`And`/`Or` nodes — a deep embedding of predicates,
 nested inside what is otherwise an eager dataframe. How much of the user's
 program the library can see is set construct by construct, and every
 capability in section 3 has a minimum visibility requirement.
+
+The same observation runs the other direction: shallow and deep are not
+rivals so much as layers that stack. The fluent methods of
+`fluent_pushdown.py` are a shallow layer — plain method calls — whose only
+job is to construct the deep layer underneath; `vectorized.py`'s `Expr` is
+a thin shallow wrapper over its deep predicate nodes; and `codegen.py`
+translates the deep plan into Python's own deep embedding of itself, the
+`ast` module. The most useful layering puts shallow *on top of* deep: a new
+operator defined as a plain function that calls the core methods is a
+shallow extension of a deep core, and because it expands into core nodes
+before the library ever looks, the optimizer's view is undisturbed. Section
+4 leans on this.
 
 ### 2.5 A side effect of depth: when errors happen
 
@@ -396,9 +414,18 @@ at once.
 
 ## 4. Extensibility
 
-A user wants `distinct(column)` — keep the first row for each value of a
-column. It cannot be built from filter/join/limit (it needs memory across
-rows), so it must be a new operator. How hard that is decomposes into three
+Start with the easy case, which the layering of section 2.4 makes free in
+every version: an operator that is expressible as a *composition* of the
+existing ones — say, `aa_codeshare(q)` wrapping the two filters — is just a
+host-language function. It is a shallow extension over whatever core
+exists, the embedded analogue of a macro, and since it expands into core
+operators before the library ever looks at the query, nothing is lost: the
+optimizer sees only nodes it understands.
+
+The interesting case is an operator the core cannot express. A user wants
+`distinct(column)` — keep the first row for each value of a column. It
+cannot be built from filter/join/limit (it needs memory across rows), so it
+must be a genuinely new operator. How hard that is decomposes into three
 separate questions, and each embedding style fails a different one.
 
 **Can you extend the computation?** In the function-based shallow embedding,
@@ -475,7 +502,7 @@ Semantics you don't promise are implementation freedom you keep.
 | 2.1 Eager shallow | `eager` |
 | 2.2 Delayed shallow | `functional`, `lazy_pull`, `lazy_push` |
 | 2.3 Deep | `deep`, `deep_pushdown`, `fluent_pushdown` |
-| 2.4 Per-construct depth | `fluent_pushdown` vs `vectorized` predicates |
+| 2.4 Per-construct depth, layering | `fluent_pushdown` vs `vectorized` predicates; `codegen` (plan into Python AST) |
 | 2.5 Error staging | `tests/test_error_staging.py` |
 | 3.1–3.2 Deforestation, early exit | `lazy_pull`, `lazy_push` vs `eager` |
 | 3.3 Pushdown | `deep_pushdown`, `fluent_pushdown` |
@@ -529,6 +556,12 @@ Semantics you don't promise are implementation freedom you keep.
   Bierman, *LINQ: Reconciling Objects, Relations and XML in the .NET
   Framework* (SIGMOD 2006). A production-scale version of the
   fluent-frontend-over-plan design, with language support.
+- **Layering shallow on deep.** Josef Svenningsson and Emil Axelsson,
+  *Combining Deep and Shallow Embedding of Domain-Specific Languages*
+  (2015; earlier version in Trends in Functional Programming 2012). The
+  layering of section 2.4 done systematically in Haskell: a small deep
+  core, with the rest of the language defined as shallow functions over it,
+  keeping extensibility without giving up analysis.
 - **Multi-stage programming.** Walid Taha and Tim Sheard, *MetaML and
   Multi-Stage Programming with Explicit Annotations* (2000). What
   section 3.4's quasiquotation looks like when the language supports it

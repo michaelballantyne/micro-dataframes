@@ -54,9 +54,11 @@ cost on the full data.
 The write-up covers four, briefly:
 
 - **Syntax.** Nested function calls, raw constructors, fluent method
-  chains, operator overloading. Independent of everything below: the same
-  fluent surface appears here over an eager backend, a lazy one, and a
-  plan-building one.
+  chains, operator overloading. Mostly a layer over the representations
+  below — the same fluent surface appears here over an eager backend, a
+  lazy one, and a plan-building one — but not a free choice: constructor
+  syntax exposes the representation, and the surface decides whether
+  user-defined operators can look like built-in ones.
 - **What a query expression denotes.** Its result (`eager`), a computation
   to run later (`lazy_pull` and `lazy_push`, which also contrast pull- and
   push-driven streaming), or a data structure describing the query (`deep`
