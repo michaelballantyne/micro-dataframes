@@ -72,12 +72,14 @@ class IntermediateResult(Query):
 
     def join(self, other: Query, left_on: str, right_on: str) -> IntermediateResult:
         def run(consumer: Consumer) -> None:
-            right_rows: list[dict[str, Any]] = []
-            IntermediateResult.lift(other)._run(right_rows.append)
+            # Build: index the right side by key.  Probe: stream the left side.
+            index: dict[Any, list[dict[str, Any]]] = {}
+            IntermediateResult.lift(other)._run(
+                lambda row: index.setdefault(row[right_on], []).append(row)
+            )
             def joined(left_row: dict[str, Any]) -> None:
-                for right_row in right_rows:
-                    if left_row[left_on] == right_row[right_on]:
-                        consumer(left_row | right_row)
+                for right_row in index.get(left_row[left_on], []):
+                    consumer(left_row | right_row)
             self._run(joined)
         return IntermediateResult(run)
 

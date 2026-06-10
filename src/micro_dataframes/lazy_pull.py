@@ -69,11 +69,13 @@ class IntermediateResult(Query):
 
     def join(self, other: Query, left_on: str, right_on: str) -> IntermediateResult:
         def make_iter() -> Iterator[dict[str, Any]]:
-            right_rows = list(IntermediateResult.lift(other)._iter())
+            # Build: index the right side by key.  Probe: stream the left side.
+            index: dict[Any, list[dict[str, Any]]] = {}
+            for right_row in IntermediateResult.lift(other)._iter():
+                index.setdefault(right_row[right_on], []).append(right_row)
             for left_row in self._iter():
-                for right_row in right_rows:
-                    if left_row[left_on] == right_row[right_on]:
-                        yield left_row | right_row
+                for right_row in index.get(left_row[left_on], []):
+                    yield left_row | right_row
         return IntermediateResult(make_iter)
 
     def limit(self, n: int) -> IntermediateResult:

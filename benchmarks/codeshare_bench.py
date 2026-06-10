@@ -5,11 +5,6 @@
 #
 # Two variants: full materialization (no limit), and limit(3).
 #
-# eager runs the unpushed join in O(n*m); on the full data (67k x 6k =
-# 400M iterations) that takes minutes, so it gets a documented subset.
-# The first AA codeshare route appears at index 4655, so the subset is
-# chosen to include some matching rows.
-#
 # Run with: uv run python benchmarks/codeshare_bench.py
 
 import csv
@@ -22,7 +17,6 @@ from micro_dataframes import arrow, codegen, eager, fluent_pushdown, lazy_pull, 
 from micro_dataframes.arrow import col
 
 DATA_DIR = Path(__file__).parent.parent / "examples" / "openflights"
-EAGER_SUBSET = 6_000
 
 Rows = list[dict[str, Any]]
 
@@ -78,53 +72,48 @@ def best_of_3(fn: Callable[[], Any]) -> tuple[float, Any]:
     return best, result
 
 
-def bench(n: int | None, routes: Rows, airlines: Rows, routes_sub: Rows) -> None:
-    runs: list[tuple[str, Rows, Callable[[Rows], Any]]] = [
-        ("eager", routes_sub, lambda r: lambda_query(eager, r, airlines, n)),
-        ("lazy_pull", routes, lambda r: lambda_query(lazy_pull, r, airlines, n)),
-        ("fluent_pushdown", routes, lambda r: lambda_query(fluent_pushdown, r, airlines, n)),
-        ("codegen", routes, lambda r: lambda_query(codegen, r, airlines, n)),
-        ("arrow", routes, lambda r: arrow_query(r, airlines, n)),
-        ("vectorized", routes, lambda r: vectorized_query(r, airlines, n)),
+def bench(n: int | None, routes: Rows, airlines: Rows) -> None:
+    runs: list[tuple[str, Callable[[], Any]]] = [
+        ("eager", lambda: lambda_query(eager, routes, airlines, n)),
+        ("lazy_pull", lambda: lambda_query(lazy_pull, routes, airlines, n)),
+        ("fluent_pushdown", lambda: lambda_query(fluent_pushdown, routes, airlines, n)),
+        ("codegen", lambda: lambda_query(codegen, routes, airlines, n)),
+        ("arrow", lambda: arrow_query(routes, airlines, n)),
+        ("vectorized", lambda: vectorized_query(routes, airlines, n)),
     ]
     print(f"{'implementation':<16} {'routes rows':>12} {'result rows':>12} {'best of 3':>12}")
-    for name, data, fn in runs:
-        secs, result = best_of_3(lambda: fn(data))  # noqa: B023
+    for name, fn in runs:
+        secs, result = best_of_3(fn)
         nrows = len(result["source-airport"])
-        print(f"{name:<16} {len(data):>12,} {nrows:>12} {secs:>11.4f}s")
+        print(f"{name:<16} {len(routes):>12,} {nrows:>12} {secs:>11.4f}s")
 
 
 def main() -> None:
     routes = load("routes")
     airlines = load("airlines")
-    routes_sub = routes[:EAGER_SUBSET]
-    print(f"routes: {len(routes):,} rows   airlines: {len(airlines):,} rows")
-    print(f"eager uses the first {EAGER_SUBSET:,} routes; everything else uses all of them.\n")
+    print(f"routes: {len(routes):,} rows   airlines: {len(airlines):,} rows\n")
 
     print("=== join + two filters, no limit ===")
-    bench(None, routes, airlines, routes_sub)
+    bench(None, routes, airlines)
 
     print("\n=== join + two filters, limit(3) ===")
-    bench(3, routes, airlines, routes_sub)
+    bench(3, routes, airlines)
 
     print(
         "\nThings to notice:\n"
-        "  * eager joins before filtering, so it is slow even on a tenth of the data.\n"
-        "  * lazy_pull avoids materializing intermediate frames but doesn't reorder\n"
-        "    anything; it still filters after the join.\n"
-        "  * fluent_pushdown and codegen run the same optimized plan; codegen also\n"
-        "    removes the per-row dict machinery by compiling a fused kernel.\n"
-        "  * vectorized pays interpreter overhead once per column instead of once\n"
-        "    per row.  Its join is a hash join, though, while the pure-Python\n"
-        "    family scans the (filtered) right side per left row - it has no\n"
-        "    optimizer, so a nested loop over unshrunk inputs would be quadratic.\n"
-        "    arrow also hash-joins internally, so those two rows mix a join-\n"
-        "    algorithm difference into the execution-model comparison.\n"
-        "  * arrow's per-query time is dominated by fixed overhead (building the\n"
-        "    pyarrow table from Python dicts); its kernels scale far better\n"
-        "    than pure Python as data grows.\n"
-        "  * limit(3) helps the streaming implementations and codegen (they stop\n"
-        "    early); eager, vectorized, and arrow compute everything regardless."
+        "  * Every implementation uses the same hash join, so the spread (about\n"
+        "    4x) measures materialization strategy and per-row interpretation,\n"
+        "    not join algorithm.\n"
+        "  * eager is slowest because it materializes the full join result -\n"
+        "    every matching row, every column - before the filters see any of it.\n"
+        "  * lazy_pull streams rows instead, and limit(3) lets it stop early.\n"
+        "  * fluent_pushdown runs the filters before the join, so the build side\n"
+        "    shrinks to a single airline.\n"
+        "  * codegen runs the same optimized plan with no per-row dict machinery,\n"
+        "    making it the fastest pure-Python version.\n"
+        "  * vectorized and arrow pay fixed per-query costs (whole-column passes,\n"
+        "    pyarrow table construction); their advantage grows with data size,\n"
+        "    arrow's especially since its kernels leave Python entirely."
     )
 
 

@@ -34,11 +34,13 @@ def filter(q: Query, column: str, predicate: Callable[[Any], bool]) -> Query:
 
 def join(left: Query, right: Query, left_on: str, right_on: str) -> Query:
     def rows() -> Iterator[Row]:
-        right_rows = list(right())
+        # Build: index the right side by key.  Probe: stream the left side.
+        index: dict[Any, list[Row]] = {}
+        for right_row in right():
+            index.setdefault(right_row[right_on], []).append(right_row)
         for left_row in left():
-            for right_row in right_rows:
-                if left_row[left_on] == right_row[right_on]:
-                    yield left_row | right_row
+            for right_row in index.get(left_row[left_on], []):
+                yield left_row | right_row
     return rows
 
 

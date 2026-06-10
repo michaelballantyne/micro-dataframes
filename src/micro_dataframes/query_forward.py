@@ -63,14 +63,18 @@ class IntermediateResult(Query):
 
     def join(self, other: Query, left_on: str, right_on: str) -> IntermediateResult:
         other_ir = IntermediateResult.lift(other)
+        # Build: index the right side by key.  Probe: stream the left side.
+        index: dict[Any, list[int]] = {}
+        for j, key in enumerate(other_ir._columns[right_on]):
+            index.setdefault(key, []).append(j)
+
         result: dict[str, list[Any]] = {col: [] for col in self._columns | other_ir._columns}
         for i in range(self._nrows()):
-            for j in range(other_ir._nrows()):
-                if self._columns[left_on][i] == other_ir._columns[right_on][j]:
-                    for col in self._columns:
-                        result[col].append(self._columns[col][i])
-                    for col in other_ir._columns:
-                        result[col].append(other_ir._columns[col][j])
+            for j in index.get(self._columns[left_on][i], []):
+                for col in self._columns:
+                    result[col].append(self._columns[col][i])
+                for col in other_ir._columns:
+                    result[col].append(other_ir._columns[col][j])
         return IntermediateResult(result)
 
     def limit(self, n: int) -> IntermediateResult:

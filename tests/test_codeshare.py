@@ -13,8 +13,8 @@ Ground-truth for join/codeshare tests is computed by a plain-Python helper
 (no dataframe implementation involved) and expressed as a multiset
 (collections.Counter) so that order does not matter.
 
-The subset test runs on a trimmed slice of the real OpenFlights data so that
-even the O(n*m) nested-loop implementations finish quickly.
+All thirteen implementations now use a hash join (O(n+m)), so the full dataset
+is used for every codeshare test.
 """
 
 import collections
@@ -88,19 +88,6 @@ _FILTER_ROWS: list[dict[str, Any]] = [
     {"city": "CHI", "pop": 2700000},
 ]
 _FILTER_COLS: dict[str, list[Any]] = _to_col_dict(_FILTER_ROWS)
-
-# ---------------------------------------------------------------------------
-# Codeshare-query subset (fast enough for slow implementations)
-# ---------------------------------------------------------------------------
-# AA codeshare routes first appear after index 4655 in the full dataset.  We
-# include the first 5000 routes rows and all airlines rows so that every
-# implementation (including unoptimised O(n*m) ones) can compute the answer in
-# a test-reasonable time (~2 s worst case per test).
-# The expected result on this subset is computed via the plain-Python
-# _codeshare_ground_truth helper (no dataframe implementation involved).
-
-_ROUTES_SUBSET_SIZE = 5000
-
 
 # ---------------------------------------------------------------------------
 # Adapter functions
@@ -365,28 +352,9 @@ _ALL_ADAPTERS = [
     pytest.param(_codeshare_vectorized, id="vectorized"),
 ]
 
-# Fast implementations that can run the full codeshare query without a
-# prohibitive nested-loop join (they use predicate pushdown or vectorised ops).
-_FAST_ADAPTERS = [
-    pytest.param(_codeshare_deep_pushdown, id="deep_pushdown"),
-    pytest.param(_codeshare_fluent_pushdown, id="fluent_pushdown"),
-    pytest.param(_codeshare_pipe_rows, id="pipe_rows"),
-    pytest.param(_codeshare_codegen, id="codegen"),
-    pytest.param(_codeshare_arrow, id="arrow"),
-    pytest.param(_codeshare_vectorized, id="vectorized"),
-]
-
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
-
-
-@pytest.fixture(scope="session")
-def routes_subset() -> list[dict[str, Any]]:
-    """First _ROUTES_SUBSET_SIZE rows of the routes CSV."""
-    rows = _load("routes")
-    return rows[:_ROUTES_SUBSET_SIZE]
 
 
 @pytest.fixture(scope="session")
@@ -400,50 +368,18 @@ def routes_all() -> list[dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
-# Test 1: codeshare query on subset - all implementations must agree
+# Test 1: full-data codeshare query - all implementations must agree
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("adapter", _ALL_ADAPTERS)
-def test_codeshare_subset(
-    adapter: Any,
-    routes_subset: list[dict[str, Any]],
-    airlines_all: list[dict[str, Any]],
-) -> None:
-    """Every implementation must return min(3, total_matches) source-airport
-    values that are a sub-multiset of the plain-Python ground truth on the
-    subset.  Order is not required."""
-    truth = _codeshare_ground_truth(routes_subset, airlines_all)
-    total = sum(truth.values())
-    expected_len = min(3, total)
-
-    result = adapter(routes_subset, airlines_all)
-    got = result["source-airport"]
-    assert len(got) == expected_len, (
-        f"expected {expected_len} rows, got {len(got)}: {got}"
-    )
-    got_counter = collections.Counter(got)
-    for airport, count in got_counter.items():
-        assert count <= truth[airport], (
-            f"airport {airport!r} appears {count}x in result but only {truth[airport]}x in truth"
-        )
-
-
-# ---------------------------------------------------------------------------
-# Test 2: full-data ABE/ABI/ABQ assertion (fast implementations only)
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("adapter", _FAST_ADAPTERS)
 def test_codeshare_full_data_canonical_result(
     adapter: Any,
     routes_all: list[dict[str, Any]],
     airlines_all: list[dict[str, Any]],
 ) -> None:
-    """Fast (pushdown / vectorised) implementations must produce exactly 3
-    source-airport values on the full dataset, each a valid AA codeshare airport.
-    Order is not required.  Slow O(n*m) implementations are excluded here because
-    a 67k x 6k nested-loop join would take minutes in an unoptimised interpreter."""
+    """Every implementation must produce exactly 3 source-airport values on the
+    full dataset, each a valid AA codeshare airport.  Order is not required."""
     truth = _codeshare_ground_truth(routes_all, airlines_all)
     result = adapter(routes_all, airlines_all)
     got = result["source-airport"]
@@ -456,7 +392,7 @@ def test_codeshare_full_data_canonical_result(
 
 
 # ---------------------------------------------------------------------------
-# Test 3: filter-only query - all implementations agree exactly
+# Test 2: filter-only query - all implementations agree exactly
 # ---------------------------------------------------------------------------
 
 
@@ -596,7 +532,7 @@ def test_filter_all_agree(runner: Any) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Test 4: join-only on handcrafted data - one-to-many duplication and order
+# Test 3: join-only on handcrafted data - one-to-many duplication and order
 # ---------------------------------------------------------------------------
 
 # Each _join_* function takes (left_rows, right_rows) and returns the joined
@@ -780,7 +716,7 @@ def test_join_only_duplication(runner: Any) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Test 5: limit(0) on handcrafted data
+# Test 4: limit(0) on handcrafted data
 # ---------------------------------------------------------------------------
 
 _LIMIT0_COLS: dict[str, list[Any]] = {"a": [1, 2, 3], "b": ["x", "y", "z"]}
@@ -905,7 +841,7 @@ def test_limit_zero(runner: Any) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Test 6: no-match filter on handcrafted data
+# Test 5: no-match filter on handcrafted data
 # ---------------------------------------------------------------------------
 
 _NOMATCH_COLS: dict[str, list[Any]] = {"a": [1, 2, 3], "b": ["x", "y", "z"]}

@@ -6,9 +6,24 @@ join two OpenFlights tables, filter, and take the first few rows. Each module
 in `src/micro_dataframes/` is self-contained, and each has a runnable example
 in `examples/`.
 
-The shared semantics is an inner join under two simplifying assumptions: row
-order is undefined (there is no order-by, so `limit(3)` may return any three
-matching rows), and joined tables are assumed to have disjoint column names.
+## Simplifying assumptions
+
+All implementations share these, so the differences between files are
+embedding and execution style, not features or algorithms:
+
+- The only operations are `filter`, inner `join`, and `limit` — no select,
+  group-by, aggregation, or sort.
+- Row order is undefined. There is no order-by, so `limit(3)` may return any
+  three matching rows.
+- Joins are single-key equality joins, and the joined tables are assumed to
+  have disjoint column names.
+- Every implementation uses the same join algorithm: a hash join that builds
+  an index over the right input and probes it with the left.
+- Data is small and fully in memory; every row has every column, and there
+  are no nulls. The CSV loader keeps every value as a string.
+- When errors are reported (e.g. a misspelled column name) is deliberately
+  unspecified — it varies by embedding, and
+  `tests/test_error_staging.py` records where each one fails.
 
 ```
 uv run python examples/codeshare_eager.py
@@ -28,7 +43,7 @@ uv run python examples/codeshare_eager.py
 | `deep_pushdown.py` | Deep embedding + optimizer | Adds a `schema` pass and an `optimize` pass that pushes filters below joins — possible only because the query is a data structure. |
 | `fluent_pushdown.py` | Fluent frontend, deep backend | The fluent interface builds `Plan` nodes instead of executing; `collect()` optimizes then interprets. Roughly how Polars' lazy API is shaped. |
 | `pipe_rows.py` | Deep + sanctioned extension point | `fluent_pushdown` plus `pipe_rows(fn)`, an escape hatch taking an opaque iterator transformer. The optimizer must treat it as a barrier. |
-| `codegen.py` | Deep embedding + code generation | After pushdown, compiles the plan to one fused Python function: nested loops, inline filter guards, a limit counter. The kernel is built as a Python AST with a small quasiquote helper and `compile`/`exec`; lambdas and source columns are injected into its namespace. The example prints the generated kernel. |
+| `codegen.py` | Deep embedding + code generation | After pushdown, compiles the plan to one fused Python function: loops, inline filter guards, a generated hash-join build and probe, a limit counter. The kernel is built as a Python AST with a small quasiquote helper and `compile`/`exec`; lambdas and source columns are injected into its namespace. The example prints the generated kernel. |
 | `vectorized.py` | Columnar interpreter, selection vectors | Whole-column kernels are the only place row loops live; operators compose them. `filter` and `limit` shrink a selection vector instead of copying data; `join` is a hash join over index vectors. The predicate DSL is a small deep embedding evaluated to a mask. |
 | `arrow.py` | Eager on Arrow kernels | The same execution model as `vectorized.py`, delegated to `pyarrow`'s compute kernels. `filter` takes the expression DSL (`col("x") == "Y"`) instead of a lambda, because the backend can't run opaque Python functions over its columns. |
 

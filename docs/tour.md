@@ -6,9 +6,12 @@ and one example query (see `examples/`), so the differences between files
 corresponds to differences between embedding styles. This document suggests a
 reading order and points out what to look for in each file.
 
-Two simplifying assumptions hold throughout: row order is undefined (there is
-no order-by, so `limit(3)` may return any three rows), and joined tables are
-assumed to have disjoint column names.
+The simplifying assumptions shared by all implementations are listed in the
+README; the two that matter most while reading are that row order is
+undefined (there is no order-by, so `limit(3)` may return any three rows)
+and that every join is the same hash join — build an index over the right
+input, probe with the left — so the implementations differ only in
+embedding and execution style, never in algorithm.
 
 A recurring question throughout: how much of the user's program can the
 library see? Each step makes more of the query visible to the library — first
@@ -135,8 +138,9 @@ Two parts deserve attention. The first is the produce/consume pattern (from
 Neumann's HyPer compiler): each plan node generates its loop or guard and
 delegates the loop body to its parent through a callback, so each pipeline
 becomes one loop nest with no intermediate row representation. A join breaks
-the pipeline: the kernel first runs the right side into column buffers, then
-the main loop nest scans them — both halves generated code. The second is
+the pipeline: the kernel first runs the right side into column buffers,
+indexes them by key, and then probes the index from the main loop nest —
+all of it generated code. The second is
 the mechanics of generating code at runtime: the kernel is built as a Python
 `ast` tree — a deep embedding of Python itself, manipulated as data like the
 plan — using a small quasiquote helper (`ast.parse` for templates, a
@@ -158,13 +162,6 @@ row loops live; the operators just compose them. `filter` and `limit` never
 copy data; they shrink a selection vector (the list of live row indices).
 This is the execution model of DuckDB and Polars, reduced to about a hundred
 lines.
-
-One algorithmic difference from the rest of the family: `join` is a hash
-join, not a nested loop. This version is eager and has no optimizer, so
-nothing shrinks the join inputs before they meet; a nested loop over the
-full tables would be quadratic, and the dict index is what keeps the module
-usable. Keep that in mind when reading the benchmark — `vectorized` and
-`arrow` differ from the others in join algorithm, not just execution model.
 
 Two things to compare against the rest of the collection. First, lambdas are
 gone again: a per-row predicate would defeat whole-column execution, so
@@ -216,8 +213,8 @@ freedom you keep.
   lazy versions, and when the filter is applied in `arrow`.
 - `benchmarks/` measures the differences: pushdown versus none, interpreted
   versus compiled, scalar versus vectorized.
-- Possible exercises: add a `select` operator and projection pushdown; turn
-  `codegen.py`'s join into a hash join (the build side is already
-  materialized into buffers; index them by key instead of scanning); extend
-  `arrow.py`'s `Expr` with arithmetic; try writing `distinct` for
-  `fluent_pushdown.py` and see how the closed plan type gets in the way.
+- Possible exercises: add a `select` operator and projection pushdown; make
+  the optimizer choose which join input to build the index over (it needs
+  cardinality estimates — a new pass over the plan); extend `arrow.py`'s
+  `Expr` with arithmetic; try writing `distinct` for `fluent_pushdown.py`
+  and see how the closed plan type gets in the way.

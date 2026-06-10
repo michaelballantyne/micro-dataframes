@@ -25,17 +25,18 @@ class DataFrame:
                           for col, vals in self._columns.items()})
 
     def join(self, other: DataFrame, left_on: str, right_on: str) -> DataFrame:
-        result: dict[str, list[Any]] = {col: [] for col in self._columns | other._columns}
+        # Build: index the right side by key.  Probe: stream the left side.
+        index: dict[Any, list[int]] = {}
+        for j, key in enumerate(other._columns[right_on]):
+            index.setdefault(key, []).append(j)
 
-        n_left = self._nrows()
-        n_right = other._nrows()
-        for i in range(n_left):
-            for j in range(n_right):
-                if self._columns[left_on][i] == other._columns[right_on][j]:
-                    for col in self._columns:
-                        result[col].append(self._columns[col][i])
-                    for col in other._columns:
-                        result[col].append(other._columns[col][j])
+        result: dict[str, list[Any]] = {col: [] for col in self._columns | other._columns}
+        for i in range(self._nrows()):
+            for j in index.get(self._columns[left_on][i], []):
+                for col in self._columns:
+                    result[col].append(self._columns[col][i])
+                for col in other._columns:
+                    result[col].append(other._columns[col][j])
 
         return DataFrame(result)
 

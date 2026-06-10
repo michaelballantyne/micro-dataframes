@@ -214,14 +214,14 @@ def quote_expr(template: str, /, **subs: _SubVal) -> ast.expr:
 # appends to the output columns.  Each pipeline ends up as one loop nest
 # with no intermediate row representation: that is the fusion (the pattern
 # comes from Neumann's HyPer compiler).  Joins break the pipeline: the
-# right side becomes its own loop nest that fills buffers, which the left
-# pipeline then scans.
+# right side becomes its own loop nest that fills buffers and an index dict
+# keyed by the join column; the left pipeline then probes the index with a
+# .get() lookup.
 #
 # col_vars maps each column name to the AST expression that reads its
 # current value (e.g. source0['x'][_i0]).  No locals are bound in the
-# kernel: filters, join comparisons, and output appends all use the
-# expressions directly, so a row rejected by a filter costs only the
-# predicate call.
+# kernel: filters, join probes, and output appends all use the expressions
+# directly, so a row rejected by a filter costs only the predicate call.
 #
 # Runtime values that can't appear as literals in source code — the column
 # dicts and the predicate functions — are injected into the namespace the
@@ -299,12 +299,11 @@ def produce(
             return produce(child, guarded, ns, names, col_vars)
 
         case Join(left, right, left_on, right_on):
-            # The join is a pipeline breaker: the right side's pipeline runs
-            # first and materializes into column buffers, then the left
-            # pipeline loops over the buffers under an equality guard.  Both
-            # pipelines are generated code in the same kernel.  (A real
-            # engine would index the buffers by key in a hash table rather
-            # than scan them per left row.)
+            # Build: index the right side by key.  Probe: stream the left side.
+            # The right-side pipeline runs first, materializes into column buffers,
+            # then a second build step indexes the buffer by the key column.  The
+            # left pipeline probes the index with a .get() lookup.  Both pipelines
+            # are generated code in the same kernel.
             buf = names.fresh("_right")
             fill = names.fresh("_fill")
             right_cols = sorted(schema(right))
@@ -318,24 +317,27 @@ def produce(
                     right, lambda cv: _append_columns(buf, right_cols, cv), ns, names, {}
                 ),
             )
+            idx = names.fresh("_idx")
             j = names.fresh("_i")
+            build += quote(
+                f"{idx} = {{}}\n"
+                f"for {j} in range(len({buf}[KEY])):\n"
+                f"    {idx}.setdefault({buf}[KEY][{j}], []).append({j})",
+                KEY=ast.Constant(right_on),
+            )
+            jp = names.fresh("_i")
 
             def join_consume(left_cv: dict[str, ast.expr]) -> list[ast.stmt]:
                 right_cv = {
-                    col: quote_expr(f"{buf}[COL][{j}]", COL=ast.Constant(col))
+                    col: quote_expr(f"{buf}[COL][{jp}]", COL=ast.Constant(col))
                     for col in right_cols
                 }
                 # Columns are assumed disjoint, so the dict merge is collision-free.
                 merged = left_cv | right_cv
                 return quote(
-                    f"for {j} in range(len({buf}[FIRST])):\n    BODY",
-                    FIRST=ast.Constant(right_cols[0]),
-                    BODY=quote(
-                        "if L == R:\n    BODY",
-                        L=left_cv[left_on],
-                        R=right_cv[right_on],
-                        BODY=consume(merged),
-                    ),
+                    f"for {jp} in {idx}.get(KEY, []):\n    BODY",
+                    KEY=left_cv[left_on],
+                    BODY=consume(merged),
                 )
 
             return build + produce(left, join_consume, ns, names, col_vars)
