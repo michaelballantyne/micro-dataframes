@@ -325,7 +325,7 @@ def produce(
                     col: quote_expr(f"{buf}[COL][{j}]", COL=ast.Constant(col))
                     for col in right_cols
                 }
-                # Right wins name collisions, like left_row | right_row.
+                # Columns are assumed disjoint, so the dict merge is collision-free.
                 merged = left_cv | right_cv
                 return quote(
                     f"for {j} in range(len({buf}[FIRST])):\n    BODY",

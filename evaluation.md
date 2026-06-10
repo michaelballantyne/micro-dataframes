@@ -72,12 +72,12 @@ so they are easy to drop.)
   (`fluent_pushdown`). The uniformity is deliberate and useful for diffing the
   modules, but the name suggests "already computed," which is exactly wrong
   for the lazy versions. `LazyFrame` or `QueryHandle` would mislead less.
-- Join semantics are subtle and undocumented: `left_row | right_row` means a
-  shared non-key column name silently takes the right side's value, and both
-  key columns survive. Fine for the example data, surprising elsewhere. Worse,
-  the column-append joins (`eager`, `query_lift`, `query_forward`) don't
-  match the others here: a name both sides share collects values from both,
-  giving doubled, ragged columns (see `tests/test_join_edges.py`).
+- Join behavior on shared column names diverged between the implementations
+  before the contract was tightened: the dict-merge joins let the right side
+  win, while the column-append joins (`eager`, `query_lift`, `query_forward`)
+  collected values from both sides into doubled, ragged columns. The contract
+  now assumes disjoint columns, which moves the quirk out of scope rather
+  than fixing it — worth a sentence in class either way.
 - The `DataFrame` constructor accepts a list of dicts with missing keys and
   silently builds ragged columns, which later crashes `zip(strict=True)` in
   some versions and not others.
@@ -111,9 +111,14 @@ little code.
 
 Two limitations to acknowledge. Column names are strings, so the static-typing
 dimension of embeddings (typed schemas, compile-time errors) is mostly out of
-reach in Python and goes undemonstrated. And the row-ordered semantics
-(`limit`) quietly constrains the backends — the Arrow version has to work to
-preserve nested-loop join order that a real engine would not promise.
+reach in Python and goes undemonstrated. And the semantic contract matters
+more than it first appears: this repo originally promised exact nested-loop
+row order, which quietly constrained the backends — the Arrow join needed
+sentinel index columns and a post-join sort to reproduce an order its hash
+join doesn't provide. Declaring order undefined (defensible, since there is
+no order-by) collapsed that join to a single call. The episode is itself
+worth teaching: semantics you don't promise are implementation freedom you
+keep.
 
 Alternatives considered: parser combinators (the classic shallow/deep example,
 but the optimization story is weaker and the domain less familiar to most

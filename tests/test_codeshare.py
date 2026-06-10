@@ -1,19 +1,23 @@
-"""Differential test suite for all twelve micro-dataframe implementations.
+"""Differential test suite for all thirteen micro-dataframe implementations.
+
+Relaxed contract (applies to all tests in this module):
+  * Row order is undefined — limit(n) may return ANY n rows.
+  * Column names on both sides of a join are assumed disjoint.
 
 Each adapter receives (routes_rows, airlines_rows) as list[dict[str, Any]] and
 returns dict[str, list[Any]] of result columns for the codeshare query
 (join routes + airlines on airline-id, filter codeshare=Y and name=American
 Airlines, limit 3).
 
-The test_codeshare_subset parametrized test runs on a carefully trimmed subset
-of the real OpenFlights data so that even the O(n*m) nested-loop implementations
-finish quickly.  The expected answer on that subset is computed once with the
-eager implementation and asserted against all others.
+Ground-truth for join/codeshare tests is computed by a plain-Python helper
+(no dataframe implementation involved) and expressed as a multiset
+(collections.Counter) so that order does not matter.
 
-The full-data ABE/ABI/ABQ assertion only runs for the fast (pushdown / vectorised)
-implementations to avoid 400 M-iteration nested loops in tests.
+The subset test runs on a trimmed slice of the real OpenFlights data so that
+even the O(n*m) nested-loop implementations finish quickly.
 """
 
+import collections
 import csv
 from pathlib import Path
 from typing import Any
@@ -39,6 +43,21 @@ def _to_col_dict(rows: list[dict[str, Any]]) -> dict[str, list[Any]]:
         for k, v in row.items():
             cols.setdefault(k, []).append(v)
     return cols
+
+
+def _codeshare_ground_truth(
+    routes_rows: list[dict[str, Any]],
+    airlines_rows: list[dict[str, Any]],
+) -> collections.Counter[str]:
+    """Plain-Python ground truth: multiset of source-airport values for routes
+    whose route-airline-id matches an airline named 'American Airlines' and
+    whose codeshare field is 'Y'.  No dataframe implementation is involved."""
+    aa_ids = {row["airline-id"] for row in airlines_rows if row["name"] == "American Airlines"}
+    result: collections.Counter[str] = collections.Counter()
+    for row in routes_rows:
+        if row.get("codeshare") == "Y" and row.get("route-airline-id") in aa_ids:
+            result[row["source-airport"]] += 1
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -76,10 +95,9 @@ _FILTER_COLS: dict[str, list[Any]] = _to_col_dict(_FILTER_ROWS)
 # AA codeshare routes first appear after index 4655 in the full dataset.  We
 # include the first 5000 routes rows and all airlines rows so that every
 # implementation (including unoptimised O(n*m) ones) can compute the answer in
-# a test-reasonable time (~2 s worst case per test, and we assert exact match
-# against the eager result rather than against full-data ABE/ABI/ABQ).
-# The expected result on this subset is computed dynamically from eager so that
-# the truth is consistent regardless of data changes.
+# a test-reasonable time (~2 s worst case per test).
+# The expected result on this subset is computed via the plain-Python
+# _codeshare_ground_truth helper (no dataframe implementation involved).
 
 _ROUTES_SUBSET_SIZE = 5000
 
@@ -381,33 +399,34 @@ def routes_all() -> list[dict[str, Any]]:
     return _load("routes")
 
 
-@pytest.fixture(scope="session")
-def expected_subset(
-    routes_subset: list[dict[str, Any]], airlines_all: list[dict[str, Any]]
-) -> dict[str, list[Any]]:
-    """Ground-truth result computed by eager on the subset."""
-    return _codeshare_eager(routes_subset, airlines_all)
-
-
 # ---------------------------------------------------------------------------
 # Test 1: codeshare query on subset - all implementations must agree
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("adapter", _ALL_ADAPTERS)
-def test_codeshare_subset_matches_eager(
+def test_codeshare_subset(
     adapter: Any,
     routes_subset: list[dict[str, Any]],
     airlines_all: list[dict[str, Any]],
-    expected_subset: dict[str, list[Any]],
 ) -> None:
-    """Every implementation must return the same source-airport list as eager on
-    the 5000-route subset.  We compare source-airport because that is the
-    observable output of the codeshare example; the full column set may differ
-    across implementations (e.g. codegen initialises all schema columns even for
-    empty results whereas row-streaming implementations only emit seen keys)."""
+    """Every implementation must return min(3, total_matches) source-airport
+    values that are a sub-multiset of the plain-Python ground truth on the
+    subset.  Order is not required."""
+    truth = _codeshare_ground_truth(routes_subset, airlines_all)
+    total = sum(truth.values())
+    expected_len = min(3, total)
+
     result = adapter(routes_subset, airlines_all)
-    assert result["source-airport"] == expected_subset["source-airport"]
+    got = result["source-airport"]
+    assert len(got) == expected_len, (
+        f"expected {expected_len} rows, got {len(got)}: {got}"
+    )
+    got_counter = collections.Counter(got)
+    for airport, count in got_counter.items():
+        assert count <= truth[airport], (
+            f"airport {airport!r} appears {count}x in result but only {truth[airport]}x in truth"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -421,11 +440,19 @@ def test_codeshare_full_data_canonical_result(
     routes_all: list[dict[str, Any]],
     airlines_all: list[dict[str, Any]],
 ) -> None:
-    """Fast (pushdown / vectorised) implementations must produce ['ABE','ABI','ABQ']
-    on the full dataset.  Slow O(n*m) implementations are excluded here because a
-    67k x 6k nested-loop join would take minutes in an unoptimised interpreter."""
+    """Fast (pushdown / vectorised) implementations must produce exactly 3
+    source-airport values on the full dataset, each a valid AA codeshare airport.
+    Order is not required.  Slow O(n*m) implementations are excluded here because
+    a 67k x 6k nested-loop join would take minutes in an unoptimised interpreter."""
+    truth = _codeshare_ground_truth(routes_all, airlines_all)
     result = adapter(routes_all, airlines_all)
-    assert result["source-airport"] == ["ABE", "ABI", "ABQ"]
+    got = result["source-airport"]
+    assert len(got) == 3, f"expected 3 rows, got {len(got)}: {got}"
+    got_counter = collections.Counter(got)
+    for airport, count in got_counter.items():
+        assert count <= truth[airport], (
+            f"airport {airport!r} appears {count}x in result but only {truth[airport]}x in truth"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -559,7 +586,9 @@ _FILTER_RUNNERS = [
 def test_filter_all_agree(runner: Any) -> None:
     """Filter-only query: all implementations return the same cities and values
     in the same order.  We compare city (str) and pop (may be int or str
-    depending on CSV loading) so we normalise pop to int."""
+    depending on CSV loading) so we normalise pop to int.
+    Note: filter order is technically unspecified under the contract; the exact
+    check here just documents that every implementation happens to preserve it."""
     rows = _FILTER_ROWS  # inline, no CSV needed
     result = runner(rows)
     assert result["city"] == ["NYC", "LAX"]
@@ -735,14 +764,19 @@ _JOIN_RUNNERS = [
 
 
 @pytest.mark.parametrize("runner", _JOIN_RUNNERS)
-def test_join_only_duplication_and_order(runner: Any) -> None:
+def test_join_only_duplication(runner: Any) -> None:
     """Join of _LEFT_ROWS x _RIGHT_ROWS on route-id / airline-id must produce
-    3 rows in left-table order with correct duplication: the two left rows with
-    route-id='1' each match the right row airline-id='1' - rows A-X, C-Y, E-X."""
+    exactly 3 rows with correct one-to-many duplication (two left rows with
+    route-id='1' each match airline-id='1', one row with route-id='2' matches
+    airline-id='2').  Order is not required; we compare the multiset of
+    (route-id, src, name) triples."""
     result = runner(_LEFT_ROWS, _RIGHT_ROWS)
-    assert result["src"] == ["A", "C", "E"]
-    assert result["name"] == ["X", "Y", "X"]
-    assert result["route-id"] == ["1", "2", "1"]
+    assert len(result["route-id"]) == 3
+    got = collections.Counter(
+        zip(result["route-id"], result["src"], result["name"], strict=True)
+    )
+    expected = collections.Counter([("1", "A", "X"), ("2", "C", "Y"), ("1", "E", "X")])
+    assert got == expected, f"expected multiset {dict(expected)}, got {dict(got)}"
 
 
 # ---------------------------------------------------------------------------

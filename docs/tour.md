@@ -3,8 +3,12 @@
 Each module in `src/micro_dataframes/` is self-contained and around a hundred
 lines. They share one query vocabulary (`filter`, `join`, `limit`, `collect`)
 and one example query (see `examples/`), so the differences between files
-correspond to differences between embedding styles. This document suggests a
+corresponds to differences between embedding styles. This document suggests a
 reading order and points out what to look for in each file.
+
+Two simplifying assumptions hold throughout: row order is undefined (there is
+no order-by, so `limit(3)` may return any three rows), and joined tables are
+assumed to have disjoint column names.
 
 A recurring question throughout: how much of the user's program can the
 library see? Each step makes more of the query visible to the library — first
@@ -155,6 +159,13 @@ copy data; they shrink a selection vector (the list of live row indices).
 This is the execution model of DuckDB and Polars, reduced to about a hundred
 lines.
 
+One algorithmic difference from the rest of the family: `join` is a hash
+join, not a nested loop. This version is eager and has no optimizer, so
+nothing shrinks the join inputs before they meet; a nested loop over the
+full tables would be quadratic, and the dict index is what keeps the module
+usable. Keep that in mind when reading the benchmark — `vectorized` and
+`arrow` differ from the others in join algorithm, not just execution model.
+
 Two things to compare against the rest of the collection. First, lambdas are
 gone again: a per-row predicate would defeat whole-column execution, so
 `filter` takes the `col("x") == "Y"` expression DSL. Here the DSL is a small
@@ -187,11 +198,14 @@ non-boolean is standard practice in embedded query DSLs (pandas, SQLAlchemy,
 Polars, ORMs), and it has a standard cost: `__eq__`'s contract is violated,
 and mypy needs a `type: ignore[override]`.
 
-The `join` method is also worth reading. Arrow's hash join neither preserves
-row order nor keeps both key columns by default, while this repo's semantics
-(inherited from the nested-loop implementations) require both. The fix —
-adding row-index columns, sorting after the join, dropping them — shows what
-it takes to put exact semantics on top of a backend with weaker guarantees.
+The `join` method shows what the contract buys. With row order undefined and
+column names disjoint, the join is a single delegated call. Under the
+stricter contract this repo started with — exact nested-loop row order, both
+key columns, right side winning name collisions — the same method needed
+sentinel row-index columns, a sort after the join, and rename/drop
+bookkeeping, because Arrow's hash join promises none of that. Relaxing the
+contract deleted all of it: semantics you don't promise are implementation
+freedom you keep.
 
 ## Related material
 

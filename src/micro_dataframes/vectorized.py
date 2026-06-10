@@ -130,16 +130,13 @@ def hash_join(
     right_sel: list[int],
 ) -> tuple[list[int], list[int]]:
     # Build a dict mapping each right key value to the list of right row indices
-    # that carry it, iterating right_sel in order so that right-side order is
-    # preserved within each bucket.
+    # that carry it.
     index: dict[Any, list[int]] = {}
     for ri in right_sel:
         index.setdefault(right_keys[ri], []).append(ri)
 
-    # Probe: for each left row (in left_sel order), emit one output row per
-    # matching right row.  This preserves the nested-loop order that the other
-    # implementations use: left rows in left-table order, each left row's
-    # matches in right-table order.
+    # Probe: iterate left_sel in sequence; left-order preservation falls out
+    # naturally.
     out_left: list[int] = []
     out_right: list[int] = []
     for li in left_sel:
@@ -213,11 +210,8 @@ class DataFrame:
 
     def join(self, other: DataFrame, left_on: str, right_on: str) -> DataFrame:
         # Produce the cross-product index vectors via hash_join, then
-        # materialize merged columns with take.  Left columns are gathered
-        # first; right columns follow, overwriting on name collision so that
-        # right wins — mirroring left_row | right_row in the row-streaming
-        # implementations.  When left_on == right_on, both sides emit the same
-        # column name and the right value survives (same semantics).
+        # materialize merged columns with take.  Column names are assumed
+        # disjoint (contract), so the dict merge is collision-free.
         li_vec, ri_vec = hash_join(
             self._columns[left_on], self._sel,
             other._columns[right_on], other._sel,
@@ -227,7 +221,6 @@ class DataFrame:
             merged[name] = take(col_data, li_vec)
         for name, col_data in other._columns.items():
             merged[name] = take(col_data, ri_vec)
-        # Result rows are already in the correct order; use a full fresh sel.
         return DataFrame._from_parts(merged, list(range(len(li_vec))))
 
     def limit(self, n: int) -> DataFrame:

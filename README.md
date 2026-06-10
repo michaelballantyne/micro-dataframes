@@ -6,6 +6,10 @@ join two OpenFlights tables, filter, and take the first few rows. Each module
 in `src/micro_dataframes/` is self-contained, and each has a runnable example
 in `examples/`.
 
+The shared semantics is an inner join under two simplifying assumptions: row
+order is undefined (there is no order-by, so `limit(3)` may return any three
+matching rows), and joined tables are assumed to have disjoint column names.
+
 ```
 uv run python examples/codeshare_eager.py
 ```
