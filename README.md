@@ -1,5 +1,9 @@
 # micro-dataframes
 
+> [!WARNING]
+> Written with lots of help from Claude. I've reviewed most of the implementations in some depth, but less so the last three (codegen, vectorized, arrow) and claude-writeup.md is mostly Claude's work from my outline.
+
+
 Small dataframe implementations, each around a hundred lines, illustrating
 different ways to embed a query DSL in Python. They all run the same query:
 join two OpenFlights tables, filter, and take the first few rows. Each module
@@ -25,16 +29,13 @@ embedding and execution style, not features or algorithms:
   unspecified — it varies by embedding, and
   `tests/test_error_staging.py` records where each one fails.
 
-```
-uv run python examples/codeshare_eager.py
-```
 
 ## Implementations
 
 | Module | Style | What it shows |
 |---|---|---|
 | `eager.py` | Fluent, eager | The baseline: each method materializes its result immediately. No query representation exists, so nothing can be optimized. |
-| `functional.py` | Shallow embedding, functions | A query is just a thunk producing rows. The representation is the public interface, so users can write new operators (see `codeshare_functional_extension.py`) exactly like the built-in ones. |
+| `functional.py` | FP shallow embedding, functions | A query is just a thunk producing rows. The representation is the public interface, so users can write new operators (see `codeshare_functional_extension.py`) exactly like the built-in ones. |
 | `query_lift.py` | Fluent, explicit lift | Separates `DataFrame` (data) from `Query` (computation). The user lifts explicitly with `q(df)` and lowers with `collect()`. |
 | `query_forward.py` | Fluent, implicit lift | Same split, but `DataFrame` forwards query methods to `IntermediateResult`, so lifting is invisible at the call site. |
 | `lazy_pull.py` | Shallow embedding, pull | `IntermediateResult` wraps a function returning a row iterator. Lazy, streaming, Volcano-style: consumers pull rows on demand. |
@@ -52,11 +53,17 @@ Two examples extend implementations from the outside:
 functional version, and `codeshare_monkeypatch.py` adds one to `lazy_pull` by
 assigning a method onto the class at runtime.
 
+Each implementation has a corresponding example program in `examples`. Run like:
+
+```
+uv run python examples/codeshare_eager.py
+```
+
 ## Extras
 
 These are kept separate from the implementations and examples:
 
-- `docs/embeddings.md` — what the implementations show, organized by
+- `claude-writup.md` — what the implementations show, organized by
   concept: syntax, shallow vs deep, optimizations, extensibility, with
   exercises and further reading. The table above is in a sensible reading
   order.
